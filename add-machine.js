@@ -4,6 +4,7 @@
 //
 //   node add-machine.js <name> <ssh-target> [--address <this-PC-ip>]
 //   node add-machine.js <name> <ssh-target> --uninstall
+//   node add-machine.js <name> --print          (print a command to run on the machine instead)
 //
 // <name> is the label shown on the dashboard. <ssh-target> is anything `ssh` accepts
 // (user@host, an alias from ~/.ssh/config). The remote machine needs python3.
@@ -86,7 +87,15 @@ if not uninstall:
         print("WARNING: can't reach the dashboard at %s (%s). Check the Windows firewall and that the server was restarted." % (health, e))
 `;
 
-const r = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', target, 'python3', '-'], { input: py, encoding: 'utf8' });
+// --print: output a shell command to run on the machine yourself (or hand to a Claude session there).
+if (target === '--print') {
+  if (uninstall) delete cfg.machines[name];
+  saveConfig(cfg);
+  process.stdout.write(`python3 - <<'CLAUDE_EDGE_EOF'\n${py.trim()}\nCLAUDE_EDGE_EOF\n`);
+  process.exit(0);
+}
+
+const r = spawnSync('ssh',['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', target, 'python3', '-'], { input: py, encoding: 'utf8' });
 process.stdout.write(r.stdout || '');
 if (r.status !== 0) {
   process.stderr.write(r.stderr || '');

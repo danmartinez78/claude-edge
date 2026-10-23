@@ -520,7 +520,7 @@ function cardHtml(s) {
   }
   return `<button class="card st-${st} ${ui.session === s.id ? 'sel' : ''}" data-act="session" data-key="${esc(s.id)}">
     <div class="card-top">${statusHtml(st)}<span class="time">${ago(s.lastActivity)}</span></div>
-    ${ui.project === null || s.machine ? `<div class="card-proj">${esc([ui.project === null && s.projectName, s.machine].filter(Boolean).join(' · '))}</div>` : ''}
+    ${ui.project === null || s.machine || s.projectThread ? `<div class="card-proj">${esc([ui.project === null && s.projectName, s.machine, s.projectThread && 'project thread'].filter(Boolean).join(' · '))}</div>` : ''}
     <div class="card-title${s.untitled ? ' untitled' : ''}">${esc(s.title)}</div>
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;

@@ -82,6 +82,26 @@ const stable = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' &&
   ? Object.keys(x).sort().reduce((o, key) => ((o[key] = x[key]), o), {}) : x));
 const matchKey = (tool, input) => `${tool}|${stable(input || {})}`;
 
+// Threads started from a claude.ai Project receive their prompts wrapped in a
+// <project_claude_message> envelope: <cited> messages for context (from the coordinator or
+// from you) and a <note> with this thread's task. Turn that into readable text and a title.
+const stripMd = (t) => t.replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
+function unwrapEnvelope(text) {
+  if (typeof text !== 'string' || !/^\s*<project_claude_message\b/.test(text)) return null;
+  const notes = [...text.matchAll(/<note>([\s\S]*?)<\/note>/g)].map((m) => m[1].trim()).filter(Boolean);
+  const yours = [...text.matchAll(/<cited\b([^>]*)>([\s\S]*?)<\/cited>/g)]
+    .filter((m) => /author="user"/.test(m[1])).map((m) => m[2].trim()).filter(Boolean);
+  const task = notes[notes.length - 1] || '';
+  const said = yours[yours.length - 1] || '';
+  // "robodan asked to upload X" -> "Upload X"
+  const first = (stripMd(task).split(/(?<=[.!?])\s/)[0] || stripMd(said))
+    .replace(/^[\w.-]+ (?:asked|wants|would like) (?:you |me )?(?:to )?/i, '').replace(/^./, (c) => c.toUpperCase());
+  const parts = [];
+  if (said) parts.push(`You: ${said}`);
+  if (task) parts.push(`Task from the project: ${task}`);
+  return { title: clip(first, 90) || null, text: parts.join('\n\n') || 'Message from the project coordinator' };
+}
+
 // Sessions on other machines have no transcript we can read, so keep a short log from their hooks.
 function logItem(s, item) {
   (s.log = s.log || []).push({ ...item, ts: new Date().toISOString() });
@@ -95,6 +115,12 @@ function onHook(ev, req, res, machine) {
   s.live = true;
   s.lastActivity = Date.now();
   if (machine) s.machine = machine;
+  const env = ev.hook_event_name === 'UserPromptSubmit' ? unwrapEnvelope(ev.prompt) : null;
+  if (env) {
+    s.projectThread = true;
+    if (env.title) s.envelopeTitle = env.title;
+    ev = { ...ev, prompt: env.text };
+  }
   switch (ev.hook_event_name) {
     case 'UserPromptSubmit': if (ev.prompt) logItem(s, { role: 'user', text: clip(ev.prompt, 2000) }); break;
     case 'PreToolUse': logItem(s, { role: 'tool', tool: ev.tool_name, text: describeTool(ev.tool_name, ev.tool_input) }); break;
@@ -226,7 +252,15 @@ function readHead(file, bytes) {
 function promptText(o) {
   const c = o.message && o.message.content;
   const t = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((x) => x.type === 'text') || {}).text : null;
+  const env = unwrapEnvelope(t);
+  if (env) return env.text;
   return t && !t.startsWith('<') ? t : null;
+}
+
+// Best available title: the app's own, a project thread's task, the transcript summary, or the first prompt.
+function titleOf(s) {
+  const first = s.firstPrompt && !s.firstPrompt.startsWith('<') && !s.projectThread ? s.firstPrompt : null;
+  return s.title || s.envelopeTitle || s.summary || first || null;
 }
 
 function scanTranscripts() {
@@ -308,17 +342,18 @@ function snapshot() {
     else if (status === 'working' && Date.now() - s.lastActivity > 15 * 60e3) status = 'stale';
     const dir = projectDir(s.projectCwd || s.cwd);
     const fallback = `Session in ${projectName(dir)}${s.machine ? ` on ${s.machine}` : ''}`;
-    list.push({ id: s.id, title: s.title || s.summary || s.firstPrompt || fallback, untitled: !(s.title || s.summary || s.firstPrompt), machine: s.machine || null,
+    const lastPrompt = s.lastPrompt && s.lastPrompt.startsWith('<project_claude_message') ? (unwrapEnvelope(s.lastPrompt) || {}).text : s.lastPrompt;
+    list.push({ id: s.id, title: titleOf(s) || fallback, untitled: !titleOf(s), machine: s.machine || null, projectThread: !!s.projectThread,
       project: s.machine ? `${s.machine}:${dir}` : dir, projectPath: dir, projectName: projectName(dir),
       status, live: s.live, desktop: s.desktop, lastActivity: s.lastActivity, activity: s.activity, activityTool: s.activityTool,
-      lastPrompt: s.lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
+      lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
   }
   list.sort((a, b) => b.lastActivity - a.lastActivity);
   const pend = [...pending.values()].sort((a, b) => a.createdAt - b.createdAt).map((p) => {
     const s = sessions.get(p.sessionId) || {};
     return { id: p.id, sessionId: p.sessionId, tool: p.tool, input: clipDeep(p.input), suggestions: p.suggestions,
       createdAt: p.createdAt, summary: describeTool(p.tool, p.input),
-      sessionTitle: s.title || s.firstPrompt || `Session in ${projectName(s.projectCwd || s.cwd)}`, projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
+      sessionTitle: titleOf(s) || `Session in ${projectName(s.projectCwd || s.cwd)}`, projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
   });
   return { now: Date.now(), sessions: list, pending: pend };
 }
@@ -352,6 +387,7 @@ function loadState() {
   for (const s of list) {
     // Whatever it was doing before the restart is unknown now.
     if (s.status === 'working' || s.status === 'approval') { s.status = 'idle'; s.activity = null; }
+    if (String(s.firstPrompt).startsWith('<project_claude_message')) s.projectThread = true;
     sessions.set(s.id, s);
   }
 }
@@ -425,7 +461,11 @@ async function handle(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/transcript') {
       const s = sessions.get(url.searchParams.get('id') || '');
       const items = !s ? [] : s.demoTranscript || (s.machine ? [] : transcriptTail(s));
-      return json(res, 200, { items: items.length ? items : (s && s.log) || [] });
+      const out = (items.length ? items : (s && s.log) || []).map((i) => {
+        const env = i.role === 'user' && unwrapEnvelope(i.text); // entries logged before envelopes were unwrapped
+        return env ? { ...i, text: env.text } : i;
+      });
+      return json(res, 200, { items: out });
     }
   } catch (e) {
     return json(res, 400, { error: e.message });

@@ -1,0 +1,18 @@
+{
+  "name": "claude-edge",
+  "version": "0.1.0",
+  "description": "A touch dashboard for Claude Code: watch sessions and approve or deny permission requests from a second screen like the Corsair Xeneon Edge.",
+  "license": "MIT",
+  "author": "danmartinez78",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo",
+    "install-hooks": "node install-hooks.js",
+    "uninstall-hooks": "node install-hooks.js --uninstall"
+  },
+  "keywords": ["claude", "claude-code", "dashboard", "hooks", "xeneon-edge", "touchscreen"]
+}

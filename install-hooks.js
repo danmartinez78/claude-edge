@@ -5,18 +5,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadConfig } = require('./config');
+const { loadConfig, HOOK_EVENTS: EVENTS } = require('./config');
 
 const cfg = loadConfig();
 const SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 const URL = `http://127.0.0.1:${cfg.port}/api/hook`;
 const uninstall = process.argv.includes('--uninstall');
-
-// Seconds. PermissionRequest is held open while waiting for a tap on the dashboard.
-const EVENTS = {
-  SessionStart: 3, UserPromptSubmit: 3, PreToolUse: 3, PostToolUse: 3,
-  PermissionRequest: 600, Notification: 3, Stop: 3, SessionEnd: 2,
-};
 
 let settings = {};
 if (fs.existsSync(SETTINGS)) {

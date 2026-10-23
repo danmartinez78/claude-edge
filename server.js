@@ -82,12 +82,24 @@ const stable = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' &&
   ? Object.keys(x).sort().reduce((o, key) => ((o[key] = x[key]), o), {}) : x));
 const matchKey = (tool, input) => `${tool}|${stable(input || {})}`;
 
+// Sessions on other machines have no transcript we can read, so keep a short log from their hooks.
+function logItem(s, item) {
+  (s.log = s.log || []).push({ ...item, ts: new Date().toISOString() });
+  if (s.log.length > 120) s.log.splice(0, s.log.length - 120);
+}
+
 // ---------- hooks ----------
-function onHook(ev, req, res) {
+function onHook(ev, req, res, machine) {
   if (!ev || !ev.session_id) return json(res, 200, {});
   const s = getSession(ev.session_id);
   s.live = true;
   s.lastActivity = Date.now();
+  if (machine) s.machine = machine;
+  switch (ev.hook_event_name) {
+    case 'UserPromptSubmit': if (ev.prompt) logItem(s, { role: 'user', text: clip(ev.prompt, 2000) }); break;
+    case 'PreToolUse': logItem(s, { role: 'tool', tool: ev.tool_name, text: describeTool(ev.tool_name, ev.tool_input) }); break;
+    case 'Stop': if (ev.last_assistant_message) logItem(s, { role: 'assistant', text: clip(ev.last_assistant_message, 3000) }); break;
+  }
   if (ev.cwd) { s.cwd = s.cwd || ev.cwd; if (!s.projectCwd) s.projectCwd = ev.cwd; }
   if (ev.transcript_path) s.transcript = ev.transcript_path;
   if (ev.permission_mode) s.mode = ev.permission_mode;
@@ -292,8 +304,9 @@ function snapshot() {
     if (pendingBySession[s.id]) status = 'approval';
     else if (status === 'approval' && Date.now() - s.lastActivity > 10 * 60e3) status = 'idle';
     else if (status === 'working' && Date.now() - s.lastActivity > 15 * 60e3) status = 'stale';
-    list.push({ id: s.id, title: s.title || s.summary || s.firstPrompt || 'Untitled session',
-      project: s.projectCwd || s.cwd || '', projectName: projectName(s.projectCwd || s.cwd),
+    const dir = s.projectCwd || s.cwd || '';
+    list.push({ id: s.id, title: s.title || s.summary || s.firstPrompt || 'Untitled session', machine: s.machine || null,
+      project: s.machine ? `${s.machine}:${dir}` : dir, projectPath: dir, projectName: projectName(dir),
       status, live: s.live, desktop: s.desktop, lastActivity: s.lastActivity, activity: s.activity, activityTool: s.activityTool,
       lastPrompt: s.lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
   }
@@ -302,7 +315,7 @@ function snapshot() {
     const s = sessions.get(p.sessionId) || {};
     return { id: p.id, sessionId: p.sessionId, tool: p.tool, input: clipDeep(p.input), suggestions: p.suggestions,
       createdAt: p.createdAt, summary: describeTool(p.tool, p.input),
-      sessionTitle: s.title || s.firstPrompt || 'Session', projectName: projectName(s.projectCwd || s.cwd) };
+      sessionTitle: s.title || s.firstPrompt || 'Session', projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
   });
   return { now: Date.now(), sessions: list, pending: pend };
 }
@@ -333,19 +346,30 @@ function readBody(req) {
   });
 }
 
-const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+// Extra addresses to listen on (e.g. this PC's LAN IP) so hooks on other machines can reach us.
+const LISTEN = ['127.0.0.1', ...(DEMO ? [] : cfg.listen || [])];
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, ...LISTEN.map((a) => `${a}:${PORT}`), `${os.hostname().toLowerCase()}:${PORT}`]);
 const ALLOWED_ORIGINS = new Set([...ALLOWED_HOSTS].map((h) => `http://${h}`));
 
-function authorized(req, url) {
-  const h = req.headers.authorization || '';
-  const tok = h.startsWith('Bearer ') ? h.slice(7) : req.headers['x-edge-token'] || url.searchParams.get('t');
-  if (!tok || tok.length !== cfg.token.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(cfg.token));
+function same(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-const server = http.createServer(async (req, res) => {
+// The main token can do everything. Each remote machine gets its own token that can only
+// send hook events, so one sniffed off the LAN can't approve anything.
+function authorize(req, url) {
+  const h = req.headers.authorization || '';
+  const tok = h.startsWith('Bearer ') ? h.slice(7) : req.headers['x-edge-token'] || url.searchParams.get('t');
+  if (same(tok, cfg.token)) return { admin: true };
+  for (const [machine, t] of Object.entries(cfg.machines || {})) if (same(tok, t)) return { machine };
+  return null;
+}
+
+async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
-  if (!ALLOWED_HOSTS.has(req.headers.host)) return json(res, 403, { error: 'bad host' });
+  if (!ALLOWED_HOSTS.has(String(req.headers.host).toLowerCase())) return json(res, 403, { error: 'bad host' });
   if (req.headers.origin && !ALLOWED_ORIGINS.has(req.headers.origin)) return json(res, 403, { error: 'bad origin' });
 
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
@@ -354,10 +378,12 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true });
   if (!url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
-  if (!authorized(req, url)) return json(res, 401, { error: 'unauthorized' });
+  const who = authorize(req, url);
+  if (!who) return json(res, 401, { error: 'unauthorized' });
 
   try {
-    if (req.method === 'POST' && url.pathname === '/api/hook') return onHook(await readBody(req), req, res);
+    if (req.method === 'POST' && url.pathname === '/api/hook') return onHook(await readBody(req), req, res, who.machine);
+    if (!who.admin) return json(res, 403, { error: 'forbidden' });
     if (req.method === 'GET' && url.pathname === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
@@ -372,28 +398,34 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/transcript') {
       const s = sessions.get(url.searchParams.get('id') || '');
-      return json(res, 200, { items: !s ? [] : s.demoTranscript || transcriptTail(s) });
+      const items = !s ? [] : s.demoTranscript || (s.machine ? [] : transcriptTail(s));
+      return json(res, 200, { items: items.length ? items : (s && s.log) || [] });
     }
   } catch (e) {
     return json(res, 400, { error: e.message });
   }
   json(res, 404, { error: 'not found' });
-});
+}
 
-server.timeout = 0;
-server.requestTimeout = 0;
 setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 20e3);
-server.on('error', (e) => {
-  console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use (dashboard already running?)` : e.message);
-  process.exit(1);
-});
-server.listen(PORT, '127.0.0.1', () => {
-  // Only show the token-bearing URL on an interactive terminal, never in a log file.
-  const where = process.stdout.isTTY ? `#t=${cfg.token}` : '#t=<token from ~/.claude-edge/config.json>';
-  console.log(`Claude Edge${DEMO ? ' (demo)' : ''} on http://127.0.0.1:${PORT}/${where}`);
-  if (DEMO) return seedDemo();
-  scan();
-  setInterval(scan, 10e3);
+LISTEN.forEach((addr, i) => {
+  const server = http.createServer((req, res) => handle(req, res).catch((e) => json(res, 500, { error: e.message })));
+  server.timeout = 0;
+  server.requestTimeout = 0;
+  server.on('error', (e) => {
+    if (i > 0) return console.error(`Can't listen on ${addr}:${PORT} (${e.code}); remote machines won't reach this dashboard.`);
+    console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use (dashboard already running?)` : e.message);
+    process.exit(1);
+  });
+  server.listen(PORT, addr, () => {
+    if (i > 0) return console.log(`Also listening for remote machines on http://${addr}:${PORT}`);
+    // Only show the token-bearing URL on an interactive terminal, never in a log file.
+    const where = process.stdout.isTTY ? `#t=${cfg.token}` : '#t=<token from ~/.claude-edge/config.json>';
+    console.log(`Claude Edge${DEMO ? ' (demo)' : ''} on http://127.0.0.1:${PORT}/${where}`);
+    if (DEMO) return seedDemo();
+    scan();
+    setInterval(scan, 10e3);
+  });
 });
 
 // ---------- demo mode: made-up sessions, no hooks or disk access ----------

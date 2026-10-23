@@ -58,6 +58,24 @@ node install-hooks.js
 npm start                    # prints the dashboard URL, including your access token
 ```
 
+### Sessions on other machines
+
+Claude Code sessions on other computers on your network (Linux boxes, robots, GPU servers) can report to the same dashboard:
+
+```sh
+node add-machine.js thor dev@192.168.1.50   # <label> <ssh target>; needs python3 on the remote
+```
+
+This picks this PC's LAN address and adds it to the server's listen list, creates a token for that machine, installs the hooks there over SSH, and checks the machine can reach the dashboard. Restart the server afterwards so it listens on the LAN. On Windows, allow the port through the firewall once, from an admin PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "Claude Edge dashboard" -Direction Inbound -Protocol TCP -LocalPort 47821 -RemoteAddress LocalSubnet -Profile Private -Action Allow
+```
+
+Cards from other machines are labelled with the machine's name. Their thread view is built from hook events (your prompts, tool steps and Claude's replies), because their transcripts stay on that machine. `node add-machine.js thor dev@192.168.1.50 --uninstall` removes them again.
+
+Each machine's token can only send events. It can't read the dashboard or approve anything, so a token sniffed from the plain-HTTP LAN traffic can't be used to approve or deny requests.
+
 ### Try it without Claude Code
 
 ```sh
@@ -74,7 +92,7 @@ On Windows, also delete `Claude Edge.lnk` from your Startup folder (`shell:start
 
 ## Security
 
-- The server listens on `127.0.0.1` only.
+- The server listens on `127.0.0.1` only, unless you add another machine (then also on your LAN address).
 - Every API call needs a random token stored in `~/.claude-edge/config.json`. The launcher passes it in the URL fragment, so it never reaches server logs.
 - Requests with a foreign `Origin` or `Host` header are rejected, which blocks other websites and DNS rebinding.
 - "Always allow" only saves the rule that Claude Code itself suggested for that request.
@@ -83,7 +101,7 @@ On Windows, also delete `Claude Edge.lnk` from your Startup folder (`shell:start
 
 - Live status starts once the hooks are installed. Older sessions show as *Idle* until they're used again.
 - In the terminal CLI, the in-terminal prompt may wait for the dashboard hook (up to 10 minutes). Tap **Answer in the Claude app instead** to release it.
-- Cloud sessions and claude.ai chats don't run hooks on your machine, so they don't appear here.
+- Cloud sessions and claude.ai chats run on Anthropic's servers and can't reach a dashboard on your network, so they don't appear here.
 
 ## License
 

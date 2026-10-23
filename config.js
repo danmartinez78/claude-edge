@@ -19,4 +19,15 @@ function loadConfig() {
   return c;
 }
 
-module.exports = { loadConfig, CONF_DIR, CONF_FILE };
+function saveConfig(c) {
+  fs.writeFileSync(CONF_FILE, JSON.stringify(c, null, 2));
+}
+
+// Hook events the dashboard listens to, with timeouts in seconds. PermissionRequest is held
+// open while waiting for a tap on the dashboard.
+const HOOK_EVENTS = {
+  SessionStart: 3, UserPromptSubmit: 3, PreToolUse: 3, PostToolUse: 3,
+  PermissionRequest: 600, Notification: 3, Stop: 3, SessionEnd: 2,
+};
+
+module.exports = { loadConfig, saveConfig, HOOK_EVENTS, CONF_DIR, CONF_FILE };

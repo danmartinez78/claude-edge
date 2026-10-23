@@ -454,7 +454,7 @@ function renderRail() {
   const groups = new Map();
   for (const s of data.sessions) {
     if (ui.filter === 'active' && !isActive(s)) continue;
-    const g = groups.get(s.project) || { key: s.project, name: s.projectName, n: 0, pend: 0, work: 0, last: 0 };
+    const g = groups.get(s.project) || { key: s.project, name: s.projectName, path: s.projectPath, machine: s.machine, n: 0, pend: 0, work: 0, last: 0 };
     const st = status(s);
     g.n++; g.pend += st === 'approval' ? 1 : 0; g.work += st === 'working' ? 1 : 0; g.last = Math.max(g.last, s.lastActivity);
     groups.set(s.project, g);
@@ -468,7 +468,7 @@ function renderRail() {
       <span class="proj-name">${esc(name)}</span><span class="proj-meta">${meta(g)}</span>
       <span class="proj-path">${esc(sub)}</span></button>`;
   setHTML('projects', row(null, 'All projects', `${total.n} session${total.n === 1 ? '' : 's'}`, total) +
-    list.map((g) => row(g.key, g.name, shortPath(g.key) || 'unknown folder', g)).join(''));
+    list.map((g) => row(g.key, g.name, `${g.machine ? `${g.machine} · ` : ''}${shortPath(g.path) || 'unknown folder'}`, g)).join(''));
 }
 
 // ---------- center ----------
@@ -515,7 +515,7 @@ function cardHtml(s) {
   }
   return `<button class="card st-${st} ${ui.session === s.id ? 'sel' : ''}" data-act="session" data-key="${esc(s.id)}">
     <div class="card-top">${statusHtml(st)}<span class="time">${ago(s.lastActivity)}</span></div>
-    ${ui.project === null ? `<div class="card-proj">${esc(s.projectName)}</div>` : ''}
+    ${ui.project === null || s.machine ? `<div class="card-proj">${esc([ui.project === null && s.projectName, s.machine].filter(Boolean).join(' · '))}</div>` : ''}
     <div class="card-title">${esc(s.title)}</div>
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;
@@ -618,7 +618,7 @@ function approvalHtml() {
     </div>
     <h2 class="ap-title">${esc(requestTitle(p))}</h2>
     ${desc ? `<div class="ap-desc">${esc(desc)}</div>` : ''}
-    <div class="ctx"><span class="chip">${esc(p.projectName)}</span><span class="t">${esc(p.sessionTitle)}</span><span style="margin-left:auto;flex:none">${ago(p.createdAt)} ago</span></div>
+    <div class="ctx"><span class="chip">${esc(p.projectName)}${p.machine ? ` · ${esc(p.machine)}` : ''}</span><span class="t">${esc(p.sessionTitle)}</span><span style="margin-left:auto;flex:none">${ago(p.createdAt)} ago</span></div>
     <div class="code">${codeHtml(p)}</div>
     <div class="actions">
       ${btn('deny', 'deny', 'ban', 'Deny')}
@@ -649,7 +649,7 @@ function threadHtml(s) {
       : `<div class="m ${g.role}">${g.role === 'assistant' ? mdLite(g.text) : esc(g.text)}</div>`).join('')
     : `<div class="th-empty">${threadCache.id === s.id ? 'No transcript on this PC for this session.' : 'Loading…'}</div>`;
   return `<div class="pv">
-    <div class="th-head"><div class="meta">${statusHtml(st)}<h2>${esc(s.title)}</h2><div class="where">${esc(s.projectName)} · ${esc(shortPath(s.project))}${s.mode ? ` · ${esc(s.mode)}` : ''}</div></div>
+    <div class="th-head"><div class="meta">${statusHtml(st)}<h2>${esc(s.title)}</h2><div class="where">${esc(s.projectName)} · ${s.machine ? `${esc(s.machine)} · ` : ''}${esc(shortPath(s.projectPath))}${s.mode ? ` · ${esc(s.mode)}` : ''}</div></div>
       <button class="icon-btn" data-act="close">${icon('x')}</button></div>
     ${n ? `<div class="banner">${statusHtml('approval')}<span>${n} request${n === 1 ? '' : 's'} waiting</span><button data-act="review">Review</button></div>` : ''}
     <div class="msgs" id="msgs">${body}</div></div>`;

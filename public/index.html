@@ -69,6 +69,10 @@
   .proj:active { background: var(--surface-2); }
   .proj.sel { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hair); }
   .proj-name { font-weight: 600; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mtag { display: inline-block; vertical-align: .1em; margin-left: .4rem; padding: .05rem .4rem; border-radius: .35rem; font-size: .56rem; font-weight: 600;
+    letter-spacing: .04em; color: var(--text-2); background: rgba(255, 255, 255, .07); font-family: var(--mono); }
+  .card-title.untitled { font-weight: 400; font-style: italic; color: var(--text-2); }
+  .review.muted { color: var(--text-3); font-weight: 500; }
   .proj-path { grid-column: 1; color: var(--text-3); font-size: .62rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .proj-meta { grid-column: 2; grid-row: 1 / span 2; display: flex; align-items: center; gap: .35rem; }
   .count { color: var(--text-3); font-size: .7rem; font-variant-numeric: tabular-nums; min-width: 1.1rem; text-align: right; }
@@ -465,10 +469,10 @@ function renderRail() {
     (g.work ? `<span class="tag accent">${star(true)}${g.work}</span>` : '') +
     (!g.pend && !g.work ? `<span class="count">${g.n}</span>` : '');
   const row = (key, name, sub, g) => `<button class="proj ${ui.project === key ? 'sel' : ''}" data-act="project" data-key="${esc(key ?? '')}" ${key === null ? 'data-all' : ''}>
-      <span class="proj-name">${esc(name)}</span><span class="proj-meta">${meta(g)}</span>
+      <span class="proj-name">${esc(name)}${g.machine ? `<span class="mtag">${esc(g.machine)}</span>` : ''}</span><span class="proj-meta">${meta(g)}</span>
       <span class="proj-path">${esc(sub)}</span></button>`;
   setHTML('projects', row(null, 'All projects', `${total.n} session${total.n === 1 ? '' : 's'}`, total) +
-    list.map((g) => row(g.key, g.name, `${g.machine ? `${g.machine} · ` : ''}${shortPath(g.path) || 'unknown folder'}`, g)).join(''));
+    list.map((g) => row(g.key, g.name, shortPath(g.path) || 'unknown folder', g)).join(''));
 }
 
 // ---------- center ----------
@@ -509,14 +513,15 @@ function cardHtml(s) {
   let foot = '';
   if (st === 'approval') {
     foot = `${s.activity ? `<div class="activity">${icon(toolIcon(s.activityTool))}<span>${esc(s.activity)}</span></div>` : ''}
-      <div class="review">Tap to review ${icon('right')}</div>`;
+      ${s.pending ? `<div class="review">Tap to review ${icon('right')}</div>`
+        : `<div class="review muted">Waiting for approval in Claude${s.machine ? ` on ${esc(s.machine)}` : ''}</div>`}`;
   } else if (st === 'working') {
     foot = `<div class="activity">${icon(toolIcon(s.activityTool))}<span>${esc(s.activity || 'Working…')}</span></div>`;
   }
   return `<button class="card st-${st} ${ui.session === s.id ? 'sel' : ''}" data-act="session" data-key="${esc(s.id)}">
     <div class="card-top">${statusHtml(st)}<span class="time">${ago(s.lastActivity)}</span></div>
     ${ui.project === null || s.machine ? `<div class="card-proj">${esc([ui.project === null && s.projectName, s.machine].filter(Boolean).join(' · '))}</div>` : ''}
-    <div class="card-title">${esc(s.title)}</div>
+    <div class="card-title${s.untitled ? ' untitled' : ''}">${esc(s.title)}</div>
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;
 }

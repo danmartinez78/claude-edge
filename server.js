@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { loadConfig } = require('./config');
+const { loadConfig, CONF_DIR } = require('./config');
 
 const cfg = loadConfig();
 const args = process.argv.slice(2);
@@ -107,7 +107,7 @@ function onHook(ev, req, res, machine) {
   switch (ev.hook_event_name) {
     case 'SessionStart':
       s.status = 'idle'; s.activity = null;
-      if (ev.session_title && !s.title) s.title = ev.session_title;
+      if (ev.session_title) s.title = ev.session_title;
       break;
     case 'UserPromptSubmit':
       s.status = 'working'; s.activity = 'Thinking…'; s.activityTool = null; s.lastPrompt = clip(ev.prompt, 400);
@@ -290,7 +290,9 @@ function transcriptTail(s, maxItems = 60) {
 }
 
 // ---------- snapshot + SSE ----------
-const projectName = (cwd) => (cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : 'Unknown');
+// Worktree sessions (Remote Control, desktop app) run in <repo>/.claude/worktrees/<name>; group them with the repo.
+const projectDir = (cwd) => String(cwd || '').replace(/[\\/]+\.claude[\\/]worktrees[\\/][^\\/]+[\\/]*$/, '');
+const projectName = (cwd) => (cwd ? projectDir(cwd).replace(/[\\/]+$/, '').split(/[\\/]/).pop() : 'Unknown');
 
 function snapshot() {
   const cutoff = Date.now() - HISTORY_DAYS * 864e5;
@@ -304,8 +306,9 @@ function snapshot() {
     if (pendingBySession[s.id]) status = 'approval';
     else if (status === 'approval' && Date.now() - s.lastActivity > 10 * 60e3) status = 'idle';
     else if (status === 'working' && Date.now() - s.lastActivity > 15 * 60e3) status = 'stale';
-    const dir = s.projectCwd || s.cwd || '';
-    list.push({ id: s.id, title: s.title || s.summary || s.firstPrompt || 'Untitled session', machine: s.machine || null,
+    const dir = projectDir(s.projectCwd || s.cwd);
+    const fallback = `Session in ${projectName(dir)}${s.machine ? ` on ${s.machine}` : ''}`;
+    list.push({ id: s.id, title: s.title || s.summary || s.firstPrompt || fallback, untitled: !(s.title || s.summary || s.firstPrompt), machine: s.machine || null,
       project: s.machine ? `${s.machine}:${dir}` : dir, projectPath: dir, projectName: projectName(dir),
       status, live: s.live, desktop: s.desktop, lastActivity: s.lastActivity, activity: s.activity, activityTool: s.activityTool,
       lastPrompt: s.lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
@@ -315,7 +318,7 @@ function snapshot() {
     const s = sessions.get(p.sessionId) || {};
     return { id: p.id, sessionId: p.sessionId, tool: p.tool, input: clipDeep(p.input), suggestions: p.suggestions,
       createdAt: p.createdAt, summary: describeTool(p.tool, p.input),
-      sessionTitle: s.title || s.firstPrompt || 'Session', projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
+      sessionTitle: s.title || s.firstPrompt || `Session in ${projectName(s.projectCwd || s.cwd)}`, projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
   });
   return { now: Date.now(), sessions: list, pending: pend };
 }
@@ -327,7 +330,30 @@ function broadcast() {
     bcTimer = null;
     const data = `data: ${JSON.stringify(snapshot())}\n\n`;
     for (const c of clients) c.write(data);
+    saveState();
   }, 80);
+}
+
+// Sessions from other machines exist only as hook events, so keep them across restarts.
+const STATE_FILE = path.join(CONF_DIR, 'remote-sessions.json');
+let saveTimer = null;
+function saveState() {
+  if (DEMO || saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const keep = [...sessions.values()].filter((s) => s.machine && Date.now() - s.lastActivity < HISTORY_DAYS * 864e5)
+      .map(({ demoTranscript, ...s }) => s);
+    fs.writeFile(STATE_FILE, JSON.stringify(keep), () => {});
+  }, 2000);
+}
+function loadState() {
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
+  for (const s of list) {
+    // Whatever it was doing before the restart is unknown now.
+    if (s.status === 'working' || s.status === 'approval') { s.status = 'idle'; s.activity = null; }
+    sessions.set(s.id, s);
+  }
 }
 
 // ---------- http ----------
@@ -423,6 +449,7 @@ LISTEN.forEach((addr, i) => {
     const where = process.stdout.isTTY ? `#t=${cfg.token}` : '#t=<token from ~/.claude-edge/config.json>';
     console.log(`Claude Edge${DEMO ? ' (demo)' : ''} on http://127.0.0.1:${PORT}/${where}`);
     if (DEMO) return seedDemo();
+    loadState();
     scan();
     setInterval(scan, 10e3);
   });

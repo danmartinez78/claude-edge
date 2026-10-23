@@ -19,7 +19,15 @@ const PROJECTS_DIR = path.join(HOME, '.claude', 'projects');
 const APP_DATA = process.platform === 'win32' ? process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming')
   : process.platform === 'darwin' ? path.join(HOME, 'Library', 'Application Support')
   : process.env.XDG_CONFIG_HOME || path.join(HOME, '.config');
-const DESKTOP_DIR = path.join(APP_DATA, 'Claude', 'claude-code-sessions');
+// Newer Windows builds of the app keep their data in %LOCALAPPDATA%\Claude-Data\<id>\ instead.
+function desktopDirs() {
+  const dirs = [path.join(APP_DATA, 'Claude', 'claude-code-sessions')];
+  if (process.platform === 'win32') {
+    const data = path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'Claude-Data');
+    for (const d of listDirs(data)) dirs.push(path.join(d, 'claude-code-sessions'));
+  }
+  return dirs;
+}
 const INDEX = path.join(__dirname, 'public', 'index.html');
 const HISTORY_DAYS = 30;
 
@@ -174,7 +182,7 @@ function listDirs(dir) {
 }
 
 function scanDesktop() {
-  for (const a of listDirs(DESKTOP_DIR)) for (const b of listDirs(a)) {
+  for (const root of desktopDirs()) for (const a of listDirs(root)) for (const b of listDirs(a)) {
     let files = [];
     try { files = fs.readdirSync(b).filter((f) => /^local_.*\.json$/.test(f)); } catch {}
     for (const f of files) {

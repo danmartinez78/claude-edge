@@ -69,6 +69,8 @@
   .proj:active { background: var(--surface-2); }
   .proj.sel { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hair); }
   .proj-name { font-weight: 600; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rail-h { margin: .9rem .7rem .3rem; color: var(--text-3); font-size: .56rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+  .proj.unnamed .proj-name { font-style: italic; font-weight: 500; color: var(--text-2); }
   .mtag { display: inline-block; vertical-align: .1em; margin-left: .4rem; padding: .05rem .4rem; border-radius: .35rem; font-size: .56rem; font-weight: 600;
     letter-spacing: .04em; color: var(--text-2); background: rgba(255, 255, 255, .07); font-family: var(--mono); }
   .card-title.untitled { font-weight: 400; font-style: italic; color: var(--text-2); }
@@ -455,38 +457,48 @@ function renderRail() {
   if (c.idle) parts.push(`<b>${c.idle}</b> your turn`);
   setHTML('summary', parts.join(' · ') || 'All quiet');
 
+  // Rail groups: claude.ai Projects (threads share a coordinator) and standalone sessions.
   const groups = new Map();
   for (const s of data.sessions) {
     if (ui.filter === 'active' && !isActive(s)) continue;
-    const g = groups.get(s.project) || { key: s.project, name: s.projectName, path: s.projectPath, machine: s.machine, n: 0, pend: 0, work: 0, last: 0 };
+    const g = groups.get(s.groupKey) || { key: s.groupKey, kind: s.groupKind, name: s.groupName, machines: new Set(), n: 0, pend: 0, work: 0, last: 0 };
     const st = status(s);
     g.n++; g.pend += st === 'approval' ? 1 : 0; g.work += st === 'working' ? 1 : 0; g.last = Math.max(g.last, s.lastActivity);
-    groups.set(s.project, g);
+    if (s.machine) g.machines.add(s.machine);
+    groups.set(s.groupKey, g);
   }
-  const list = [...groups.values()].sort((a, b) => b.pend - a.pend || b.work - a.work || b.last - a.last);
-  const total = list.reduce((a, g) => ({ n: a.n + g.n, pend: a.pend + g.pend, work: a.work + g.work }), { n: 0, pend: 0, work: 0 });
+  const byUrgency = (a, b) => b.pend - a.pend || b.work - a.work || b.last - a.last;
+  const projects = [...groups.values()].filter((g) => g.kind === 'project').sort(byUrgency);
+  const standalone = groups.get('standalone');
+  const total = [...groups.values()].reduce((a, g) => ({ n: a.n + g.n, pend: a.pend + g.pend, work: a.work + g.work }), { n: 0, pend: 0, work: 0 });
   const meta = (g) => (g.pend ? `<span class="tag amber">${g.pend}</span>` : '') +
     (g.work ? `<span class="tag accent">${star(true)}${g.work}</span>` : '') +
     (!g.pend && !g.work ? `<span class="count">${g.n}</span>` : '');
-  const row = (key, name, sub, g) => `<button class="proj ${ui.project === key ? 'sel' : ''}" data-act="project" data-key="${esc(key ?? '')}" ${key === null ? 'data-all' : ''}>
-      <span class="proj-name">${esc(name)}${g.machine ? `<span class="mtag">${esc(g.machine)}</span>` : ''}</span><span class="proj-meta">${meta(g)}</span>
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const row = (key, name, sub, g, cls = '') => `<button class="proj ${cls} ${ui.project === key ? 'sel' : ''}" data-act="project" data-key="${esc(key ?? '')}" ${key === null ? 'data-all' : ''}>
+      <span class="proj-name">${esc(name)}</span><span class="proj-meta">${meta(g)}</span>
       <span class="proj-path">${esc(sub)}</span></button>`;
-  setHTML('projects', row(null, 'All projects', `${total.n} session${total.n === 1 ? '' : 's'}`, total) +
-    list.map((g) => row(g.key, g.name, shortPath(g.path) || 'unknown folder', g)).join(''));
+  const where = (g) => (g.machines.size ? ` · ${[...g.machines].join(', ')}` : '');
+  setHTML('projects', row(null, 'Everything', plural(total.n, 'session'), total) +
+    (projects.length ? `<div class="rail-h">Projects</div>` + projects.map((g) =>
+      row(g.key, g.name, plural(g.n, 'thread') + where(g), g, g.name === 'Unnamed project' ? 'unnamed' : '')).join('') : '') +
+    (standalone ? `<div class="rail-h">Standalone</div>` + row('standalone', 'Sessions', plural(standalone.n, 'session') + where(standalone), standalone) : ''));
 }
 
 // ---------- center ----------
 function visibleSessions() {
   const rank = { approval: 0, working: 1, idle: 2 };
-  return data.sessions.filter((s) => (ui.project === null || s.project === ui.project) && (ui.filter === 'all' || isActive(s)))
+  return data.sessions.filter((s) => (ui.project === null || s.groupKey === ui.project) && (ui.filter === 'all' || isActive(s)))
     .sort((a, b) => (rank[status(a)] ?? 3) - (rank[status(b)] ?? 3) || b.lastActivity - a.lastActivity);
 }
 
 function renderCenter() {
   const list = visibleSessions();
-  const projName = ui.project === null ? 'All projects' : (data.sessions.find((s) => s.project === ui.project) || {}).projectName || base(ui.project);
+  const grp = ui.project === null ? null : data.sessions.find((s) => s.groupKey === ui.project);
+  const projName = ui.project === null ? 'Everything' : ui.project === 'standalone' ? 'Standalone sessions' : grp ? grp.groupName : 'Project';
+  const noun = grp && grp.groupKind === 'project' ? 'thread' : 'session';
   const c = counts(list);
-  const sub = [`${list.length} ${ui.filter === 'active' ? 'active ' : ''}session${list.length === 1 ? '' : 's'}`,
+  const sub = [`${list.length} ${ui.filter === 'active' ? 'active ' : ''}${noun}${list.length === 1 ? '' : 's'}`,
     c.working && `${c.working} working`, c.approval && `${c.approval} waiting on you`].filter(Boolean).join(' · ');
   setHTML('centerHead', `<div style="min-width:0"><h1>${esc(projName)}</h1><div class="sub">${esc(sub)}</div></div>
     <div class="seg">${['active', 'all'].map((f) => `<button class="${ui.filter === f ? 'sel' : ''}" data-act="filter" data-key="${f}">${f === 'active' ? 'Active' : 'Last 30 days'}</button>`).join('')}</div>`);
@@ -520,7 +532,7 @@ function cardHtml(s) {
   }
   return `<button class="card st-${st} ${ui.session === s.id ? 'sel' : ''}" data-act="session" data-key="${esc(s.id)}">
     <div class="card-top">${statusHtml(st)}<span class="time">${ago(s.lastActivity)}</span></div>
-    ${ui.project === null || s.machine || s.projectThread ? `<div class="card-proj">${esc([ui.project === null && s.projectName, s.machine, s.projectThread && 'project thread'].filter(Boolean).join(' · '))}</div>` : ''}
+    <div class="card-proj">${esc([ui.project === null && s.groupKind === 'project' && s.groupName, s.projectName, s.machine].filter(Boolean).join(' · '))}</div>
     <div class="card-title${s.untitled ? ' untitled' : ''}">${esc(s.title)}</div>
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;

@@ -85,9 +85,15 @@ const matchKey = (tool, input) => `${tool}|${stable(input || {})}`;
 // Threads started from a claude.ai Project receive their prompts wrapped in a
 // <project_claude_message> envelope: <cited> messages for context (from the coordinator or
 // from you) and a <note> with this thread's task. Turn that into readable text and a title.
+// A Project's threads all name the same coordinator session, so that groups them. The Project's
+// own name only arrives if its instructions add a label like "[project: GO2 Embodied AI]".
+const LABEL_RE = /\[project:\s*([^\]\n]{1,60})\]\s*/i;
 const stripMd = (t) => t.replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
-function unwrapEnvelope(text) {
-  if (typeof text !== 'string' || !/^\s*<project_claude_message\b/.test(text)) return null;
+function unwrapEnvelope(raw) {
+  if (typeof raw !== 'string' || !/^\s*<project_claude_message\b/.test(raw)) return null;
+  const label = (LABEL_RE.exec(raw) || [])[1];
+  const text = raw.replace(new RegExp(LABEL_RE.source, 'gi'), '');
+  const coordinator = (/<relay\b[^>]*\bsession="([^"]+)"/.exec(text) || /<project_claude_message\b[^>]*\bsession="([^"]+)"/.exec(text) || [])[1];
   const notes = [...text.matchAll(/<note>([\s\S]*?)<\/note>/g)].map((m) => m[1].trim()).filter(Boolean);
   const yours = [...text.matchAll(/<cited\b([^>]*)>([\s\S]*?)<\/cited>/g)]
     .filter((m) => /author="user"/.test(m[1])).map((m) => m[2].trim()).filter(Boolean);
@@ -99,8 +105,12 @@ function unwrapEnvelope(text) {
   const parts = [];
   if (said) parts.push(`You: ${said}`);
   if (task) parts.push(`Task from the project: ${task}`);
-  return { title: clip(first, 90) || null, text: parts.join('\n\n') || 'Message from the project coordinator' };
+  return { title: clip(first, 90) || null, text: parts.join('\n\n') || 'Message from the project coordinator',
+    coordinator: coordinator || null, label: label ? label.trim() : null };
 }
+
+// Project names learned from labels, keyed by coordinator session; kept across restarts.
+const projectLabels = {};
 
 // Sessions on other machines have no transcript we can read, so keep a short log from their hooks.
 function logItem(s, item) {
@@ -119,6 +129,9 @@ function onHook(ev, req, res, machine) {
   if (env) {
     s.projectThread = true;
     if (env.title) s.envelopeTitle = env.title;
+    if (env.coordinator) s.projectId = env.coordinator;
+    if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
+    if (env.label) s.projectLabel = env.label;
     ev = { ...ev, prompt: env.text };
   }
   switch (ev.hook_event_name) {
@@ -249,9 +262,13 @@ function readHead(file, bytes) {
   finally { fs.closeSync(fd); }
 }
 
-function promptText(o) {
+function rawText(o) {
   const c = o.message && o.message.content;
-  const t = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((x) => x.type === 'text') || {}).text : null;
+  return typeof c === 'string' ? c : Array.isArray(c) ? (c.find((x) => x.type === 'text') || {}).text : null;
+}
+
+function promptText(o) {
+  const t = rawText(o);
   const env = unwrapEnvelope(t);
   if (env) return env.text;
   return t && !t.startsWith('<') ? t : null;
@@ -282,7 +299,14 @@ function scanTranscripts() {
           let o; try { o = JSON.parse(line); } catch { continue; }
           if (o.cwd && !s.cwd) s.cwd = o.cwd;
           if (o.type === 'summary' && o.summary && !s.summary) s.summary = o.summary;
-          if (o.type === 'user' && !o.isMeta && !s.firstPrompt) { const t = promptText(o); if (t) s.firstPrompt = clip(t, 200); }
+          if (o.type === 'user' && !o.isMeta && !s.firstPrompt) {
+            const env = unwrapEnvelope(rawText(o));
+            if (env) {
+              s.projectThread = true; s.envelopeTitle = env.title; s.projectId = env.coordinator;
+              if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
+            }
+            const t = promptText(o); if (t) s.firstPrompt = clip(t, 200);
+          }
           if (s.cwd && s.firstPrompt) break;
         }
       } catch {}
@@ -343,7 +367,10 @@ function snapshot() {
     const dir = projectDir(s.projectCwd || s.cwd);
     const fallback = `Session in ${projectName(dir)}${s.machine ? ` on ${s.machine}` : ''}`;
     const lastPrompt = s.lastPrompt && s.lastPrompt.startsWith('<project_claude_message') ? (unwrapEnvelope(s.lastPrompt) || {}).text : s.lastPrompt;
-    list.push({ id: s.id, title: titleOf(s) || fallback, untitled: !titleOf(s), machine: s.machine || null, projectThread: !!s.projectThread,
+    const group = s.projectThread
+      ? { groupKind: 'project', groupKey: `project:${s.projectId || 'unknown'}`, groupName: projectLabels[s.projectId] || s.projectLabel || 'Unnamed project' }
+      : { groupKind: 'standalone', groupKey: 'standalone', groupName: 'Standalone sessions' };
+    list.push({ id: s.id, title: titleOf(s) || fallback, untitled: !titleOf(s), machine: s.machine || null, projectThread: !!s.projectThread, ...group,
       project: s.machine ? `${s.machine}:${dir}` : dir, projectPath: dir, projectName: projectName(dir),
       status, live: s.live, desktop: s.desktop, lastActivity: s.lastActivity, activity: s.activity, activityTool: s.activityTool,
       lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
@@ -378,16 +405,19 @@ function saveState() {
     saveTimer = null;
     const keep = [...sessions.values()].filter((s) => s.machine && Date.now() - s.lastActivity < HISTORY_DAYS * 864e5)
       .map(({ demoTranscript, ...s }) => s);
-    fs.writeFile(STATE_FILE, JSON.stringify(keep), () => {});
+    fs.writeFile(STATE_FILE, JSON.stringify({ sessions: keep, labels: projectLabels }), () => {});
   }, 2000);
 }
 function loadState() {
-  let list = [];
-  try { list = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
+  let saved = {};
+  try { saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
+  const list = Array.isArray(saved) ? saved : saved.sessions || [];
+  Object.assign(projectLabels, saved.labels || {});
   for (const s of list) {
     // Whatever it was doing before the restart is unknown now.
     if (s.status === 'working' || s.status === 'approval') { s.status = 'idle'; s.activity = null; }
-    if (String(s.firstPrompt).startsWith('<project_claude_message')) s.projectThread = true;
+    const env = unwrapEnvelope(s.firstPrompt); // sessions saved before envelopes were understood
+    if (env) { s.projectThread = true; s.projectId = s.projectId || env.coordinator; }
     sessions.set(s.id, s);
   }
 }
@@ -509,6 +539,8 @@ function seedDemo() {
     lastPrompt: 'Switch the solver to damped least squares near singularities', activityTool: 'Grep', activity: 'Grep "jacobian"' });
   add('d5', { title: 'Write the v0.4 release notes', projectCwd: '/home/dev/pixel-forge', status: 'idle', live: false, lastActivity: t - 3 * 3600e3,
     lastMessage: 'Drafted release notes covering the new tile editor, palette import and 23 bug fixes.' });
+  projectLabels['demo-coordinator'] = 'Aurora launch';
+  for (const id of ['d1', 'd2']) Object.assign(sessions.get(id), { projectThread: true, projectId: 'demo-coordinator' });
   sessions.get('d4').demoTranscript = [
     { role: 'user', text: 'Switch the solver to damped least squares near singularities' },
     { role: 'assistant', text: "I'll look at how the current solver builds the **Jacobian**, then add damping that ramps up as the arm nears a singular pose." },

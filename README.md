@@ -76,6 +76,18 @@ Cards from other machines are labelled with the machine's name. Their thread vie
 
 Each machine's token can only send events. It can't read the dashboard or approve anything, so a token sniffed from the plain-HTTP LAN traffic can't be used to approve or deny requests.
 
+### claude.ai Projects
+
+Threads started from a claude.ai Project are grouped under that Project on the rail; everything else is listed under **Standalone** by its session title. The dashboard recognizes a Project thread from the envelope its coordinator wraps prompts in, and groups threads that share a coordinator.
+
+The envelope doesn't carry the Project's name, so the dashboard reads it from a label. Add this to your Project's instructions:
+
+```text
+When you hand a task to a thread, start your note with [project: GO2 Embodied AI].
+```
+
+Use your Project's name. Until a Project's threads carry the label, its group is shown as *Unnamed project*. The label is removed from titles.
+
 ### Try it without Claude Code
 
 ```sh

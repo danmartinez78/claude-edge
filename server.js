@@ -88,11 +88,13 @@ const matchKey = (tool, input) => `${tool}|${stable(input || {})}`;
 // A Project's threads all name the same coordinator session, so that groups them. The Project's
 // own name only arrives if its instructions add a label like "[project: GO2 Embodied AI]".
 const LABEL_RE = /\[project:\s*([^\]\n]{1,60})\]\s*/i;
+const THREAD_RE = /\[thread:\s*([^\]\n]{1,90})\]\s*/i;
 const stripMd = (t) => t.replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
 function unwrapEnvelope(raw) {
   if (typeof raw !== 'string' || !/^\s*<project_claude_message\b/.test(raw)) return null;
   const label = (LABEL_RE.exec(raw) || [])[1];
-  const text = raw.replace(new RegExp(LABEL_RE.source, 'gi'), '');
+  const thread = [...raw.matchAll(new RegExp(THREAD_RE.source, 'gi'))].map((m) => m[1].trim()).pop(); // latest wins
+  const text = raw.replace(new RegExp(LABEL_RE.source, 'gi'), '').replace(new RegExp(THREAD_RE.source, 'gi'), '');
   const coordinator = (/<relay\b[^>]*\bsession="([^"]+)"/.exec(text) || /<project_claude_message\b[^>]*\bsession="([^"]+)"/.exec(text) || [])[1];
   const notes = [...text.matchAll(/<note>([\s\S]*?)<\/note>/g)].map((m) => m[1].trim()).filter(Boolean);
   const yours = [...text.matchAll(/<cited\b([^>]*)>([\s\S]*?)<\/cited>/g)]
@@ -106,7 +108,7 @@ function unwrapEnvelope(raw) {
   if (said) parts.push(`You: ${said}`);
   if (task) parts.push(`Task from the project: ${task}`);
   return { title: clip(first, 90) || null, text: parts.join('\n\n') || 'Message from the project coordinator',
-    coordinator: coordinator || null, label: label ? label.trim() : null };
+    coordinator: coordinator || null, label: label ? label.trim() : null, thread: thread || null };
 }
 
 // Project names learned from labels, keyed by coordinator session; kept across restarts.
@@ -132,6 +134,7 @@ function onHook(ev, req, res, machine) {
     if (env.coordinator) s.projectId = env.coordinator;
     if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
     if (env.label) s.projectLabel = env.label;
+    if (env.thread) s.threadTitle = env.thread;
     ev = { ...ev, prompt: env.text };
   }
   switch (ev.hook_event_name) {
@@ -277,7 +280,7 @@ function promptText(o) {
 // Best available title: the app's own, a project thread's task, the transcript summary, or the first prompt.
 function titleOf(s) {
   const first = s.firstPrompt && !s.firstPrompt.startsWith('<') && !s.projectThread ? s.firstPrompt : null;
-  return s.title || s.envelopeTitle || s.summary || first || null;
+  return s.title || s.threadTitle || s.envelopeTitle || s.summary || first || null;
 }
 
 function scanTranscripts() {
@@ -302,7 +305,7 @@ function scanTranscripts() {
           if (o.type === 'user' && !o.isMeta && !s.firstPrompt) {
             const env = unwrapEnvelope(rawText(o));
             if (env) {
-              s.projectThread = true; s.envelopeTitle = env.title; s.projectId = env.coordinator;
+              s.projectThread = true; s.envelopeTitle = env.title; s.projectId = env.coordinator; s.threadTitle = env.thread || s.threadTitle;
               if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
             }
             const t = promptText(o); if (t) s.firstPrompt = clip(t, 200);

@@ -71,9 +71,12 @@ function describeTool(name, input = {}) {
     case 'WebFetch': return `Fetch ${clip(input.url || '', 100)}`;
     case 'WebSearch': return `Search "${clip(input.query || '', 80)}"`;
     case 'Task': case 'Agent': return `Agent: ${clip(input.description || '', 80)}`;
+    case 'TodoWrite': { const t = todoSummary(input.todos); return t ? `Plan ${t.done}/${t.total}${t.current ? ` · ${t.current}` : ''}` : 'Updated the plan'; }
     default: {
-      const m = /^mcp__(.+?)__(.+)$/.exec(name || '');
-      return m ? `${m[1]} · ${m[2]}` : name || 'tool';
+      if (/__reply$/.test(name || '')) return 'Replied in the thread';
+      if (SAY_TOOL.test(name || '')) return 'Messaged another session';
+      const m = /^mcp__(?:claude_ai_)?(.+?)__(.+)$/.exec(name || '');
+      return m ? `${m[1]} · ${m[2].replace(/[_-]/g, ' ')}` : name || 'tool';
     }
   }
 }
@@ -111,8 +114,137 @@ function unwrapEnvelope(raw) {
     coordinator: coordinator || null, label: label ? label.trim() : null, thread: thread || null };
 }
 
-// Project names learned from labels, keyed by coordinator session; kept across restarts.
+const decodeXml = (t) => String(t || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+
+// Project threads are also woken by mentions: <wake><project id="chan_…"><thread ts="…"><message from="human">…
+// The project id is the Project itself, so it's the best key to group threads by.
+function unwrapWake(raw) {
+  if (typeof raw !== 'string' || !/^\s*<wake\b/.test(raw)) return null;
+  const project = (/<project\b[^>]*\bid="([^"]+)"/.exec(raw) || [])[1];
+  const label = (LABEL_RE.exec(raw) || [])[1];
+  const thread = (THREAD_RE.exec(raw) || [])[1];
+  const msgs = [...raw.matchAll(/<message\b([^>]*)>([\s\S]*?)<\/message>/g)].map((m) => ({
+    human: /\bfrom="human"/.test(m[1]), trigger: /\btrigger="true"/.test(m[1]),
+    name: (/\bauthor-name="([^"]+)"/.exec(m[1]) || [])[1],
+    text: decodeXml(m[2].replace(new RegExp(LABEL_RE.source, 'gi'), '').replace(new RegExp(THREAD_RE.source, 'gi'), '').trim()) }));
+  const m = msgs.filter((x) => x.trigger).pop() || msgs.pop();
+  const text = !m ? 'Mentioned in the project' : m.human ? `You: ${m.text}` : `${m.name || 'Another thread'}: ${m.text}`;
+  return { title: null, text, project: project || null, label: label ? label.trim() : null, thread: thread ? thread.trim() : null };
+}
+
+// What a UserPromptSubmit really is. Background-task results, slash commands and Project relays
+// arrive as "prompts" too; only 'user' is something you typed and may title a session.
+function classifyPrompt(raw) {
+  if (typeof raw !== 'string') return { kind: 'system', text: null };
+  const env = unwrapEnvelope(raw);
+  if (env) return { kind: 'project', ...env };
+  const wake = unwrapWake(raw);
+  if (wake) return { kind: 'project', ...wake };
+  const t = raw.trimStart();
+  if (t.startsWith('<task-notification>')) {
+    const tag = (n) => decodeXml(((new RegExp(`<${n}>([\\s\\S]*?)</${n}>`).exec(t) || [])[1] || '').trim());
+    return { kind: 'system', text: clip(tag('summary') || `Background task ${tag('status') || 'finished'}`, 200) };
+  }
+  const cmd = /<command-name>([^<]+)<\/command-name>/.exec(t);
+  if (cmd) return { kind: 'command', text: `${cmd[1].trim()} ${decodeXml((/<command-args>([\s\S]*?)<\/command-args>/.exec(t) || [])[1] || '').trim()}`.trim() };
+  if (t.startsWith('<')) return { kind: 'system', text: null }; // reminders, command output and the like
+  return { kind: 'user', text: raw };
+}
+
+// Bookkeeping tools (thread reactions, status pings, tool lookups) that say nothing about the work.
+const QUIET_TOOL = /^(ToolSearch|TaskOutput|TaskStop|TaskList|TaskGet)$|^mcp__.+__(react|unreact|no_reply_needed|update_status|update_message|list_thread_sessions|get_inbox|relay_get_inbox)$/;
+const SAY_TOOL = /^mcp__.+__(reply|send_message|post_message|send_direct_message|relay_send_direct_message)$/;
+
+function todoSummary(todos) {
+  if (!Array.isArray(todos) || !todos.length) return null;
+  const done = todos.filter((t) => t.status === 'completed').length;
+  const cur = todos.find((t) => t.status === 'in_progress');
+  return { done, total: todos.length, current: cur ? clip(cur.activeForm || cur.content || '', 120) : null };
+}
+
+// Project names learned from labels, keyed by project id; kept across restarts. A thread can be
+// reached both by relays (which name the coordinator session) and by wakes (which name the
+// Project), so projectAlias maps a coordinator to its Project once one thread has seen both.
 const projectLabels = {};
+const projectAlias = {};
+const canonProject = (id) => projectAlias[id] || id;
+
+function noteProject(s, p) {
+  s.projectThread = true;
+  if (p.project) {
+    if (s.projectId && s.projectId !== p.project && !s.projectId.startsWith('chan_')) projectAlias[s.projectId] = p.project;
+    s.projectId = p.project;
+  } else if (p.coordinator) {
+    if (s.projectId && s.projectId !== p.coordinator && s.projectId.startsWith('chan_')) projectAlias[p.coordinator] = s.projectId;
+    else if (!s.projectId) s.projectId = p.coordinator;
+  }
+  if (p.label) { s.projectLabel = p.label; if (s.projectId) projectLabels[canonProject(s.projectId)] = p.label; }
+  if (p.thread) s.threadTitle = p.thread;
+}
+
+// Session details found in transcript lines: the title Claude Code gave it, model, context, cost, plan.
+// Local transcripts are read directly; other machines send the same lines from edge_report.py.
+function applyMeta(s, o) {
+  if (!o || typeof o !== 'object') return;
+  switch (o.type) {
+    case 'custom-title': if (o.customTitle) s.customTitle = clip(String(o.customTitle), 120); break;
+    case 'ai-title': if (o.aiTitle || o.title) s.aiTitle = clip(String(o.aiTitle || o.title), 120); break;
+    case 'agent-name': if (o.agentName) s.agentName = clip(String(o.agentName), 120); break;
+    case 'summary': if (o.summary) s.summary = clip(String(o.summary), 120); break;
+    case 'cost-state':
+      if (typeof o.totalCostUSD === 'number') s.cost = o.totalCostUSD;
+      if (Object.keys(o.modelUsage || {}).some((k) => /\[1m\]/i.test(k))) s.bigContext = true;
+      break;
+    case 'assistant': {
+      if (o.isSidechain) break;
+      const m = o.message || {};
+      const u = m.usage;
+      if (u && m.model && m.model !== '<synthetic>') {
+        s.model = m.model;
+        s.ctxTokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+      }
+      for (const part of Array.isArray(m.content) ? m.content : []) {
+        if (part && part.type === 'tool_use' && part.name === 'TodoWrite') s.todos = todoSummary((part.input || {}).todos) || s.todos;
+      }
+      break;
+    }
+  }
+}
+
+// What Claude Code hands its status line: limits for the whole account, plus this session's details.
+let quota = null;
+function onStatus(d, machine) {
+  if (!d || typeof d !== 'object') return;
+  if (d.rate_limits && (d.rate_limits.five_hour || d.rate_limits.seven_day || d.rate_limits.spend_limit)) {
+    quota = { ...d.rate_limits, at: Date.now(), machine: machine || null };
+  }
+  if (!d.session_id) return;
+  const s = getSession(d.session_id);
+  if (machine) s.machine = machine;
+  if (d.session_name) s.sessionName = clip(String(d.session_name), 120);
+  if (d.model) { s.modelName = d.model.display_name || s.modelName; s.model = d.model.id || s.model; }
+  const cw = d.context_window || {};
+  if (typeof cw.used_percentage === 'number') s.ctxPct = cw.used_percentage;
+  if (cw.context_window_size) s.ctxWindow = cw.context_window_size;
+  if (d.cost && typeof d.cost.total_cost_usd === 'number') s.cost = d.cost.total_cost_usd;
+  if (!s.cwd && (d.workspace || {}).project_dir) s.cwd = s.projectCwd = d.workspace.project_dir;
+  s.statusAt = Date.now();
+  s.lastActivity = Math.max(s.lastActivity, s.statusAt);
+}
+
+function contextPct(s) {
+  if (typeof s.ctxPct === 'number' && Date.now() - (s.statusAt || 0) < 30 * 60e3) return Math.round(s.ctxPct);
+  if (!s.ctxTokens) return null;
+  const win = s.ctxWindow || (s.bigContext || s.ctxTokens > 2e5 || /\[1m\]/i.test(s.model || '') ? 1e6 : 2e5);
+  return Math.min(100, Math.round((s.ctxTokens / win) * 100));
+}
+
+// "claude-opus-5-5" -> "Opus 5.5"
+function modelLabel(s) {
+  if (s.modelName && Date.now() - (s.statusAt || 0) < 30 * 60e3) return s.modelName;
+  const m = /claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/i.exec(s.model || '');
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : s.model || null;
+}
 
 // Sessions on other machines have no transcript we can read, so keep a short log from their hooks.
 function logItem(s, item) {
@@ -127,19 +259,15 @@ function onHook(ev, req, res, machine) {
   s.live = true;
   s.lastActivity = Date.now();
   if (machine) s.machine = machine;
-  const env = ev.hook_event_name === 'UserPromptSubmit' ? unwrapEnvelope(ev.prompt) : null;
-  if (env) {
-    s.projectThread = true;
-    if (env.title) s.envelopeTitle = env.title;
-    if (env.coordinator) s.projectId = env.coordinator;
-    if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
-    if (env.label) s.projectLabel = env.label;
-    if (env.thread) s.threadTitle = env.thread;
-    ev = { ...ev, prompt: env.text };
-  }
+  const kind = ev.hook_event_name === 'UserPromptSubmit' ? classifyPrompt(ev.prompt) : null;
+  if (kind && kind.kind === 'project') noteProject(s, kind);
+  const quiet = QUIET_TOOL.test(ev.tool_name || '');
+  if (ev.hook_event_name === 'PreToolUse' && ev.tool_name === 'TodoWrite') s.todos = todoSummary((ev.tool_input || {}).todos) || s.todos;
   switch (ev.hook_event_name) {
-    case 'UserPromptSubmit': if (ev.prompt) logItem(s, { role: 'user', text: clip(ev.prompt, 2000) }); break;
-    case 'PreToolUse': logItem(s, { role: 'tool', tool: ev.tool_name, text: describeTool(ev.tool_name, ev.tool_input) }); break;
+    case 'UserPromptSubmit':
+      if (kind.text) logItem(s, { role: kind.kind === 'system' ? 'system' : 'user', text: clip(kind.kind === 'command' ? `You ran ${kind.text}` : kind.text, 2000) });
+      break;
+    case 'PreToolUse': if (!quiet) logItem(s, { role: 'tool', tool: ev.tool_name, text: describeTool(ev.tool_name, ev.tool_input) }); break;
     case 'Stop': if (ev.last_assistant_message) logItem(s, { role: 'assistant', text: clip(ev.last_assistant_message, 3000) }); break;
   }
   if (ev.cwd) { s.cwd = s.cwd || ev.cwd; if (!s.projectCwd) s.projectCwd = ev.cwd; }
@@ -152,11 +280,13 @@ function onHook(ev, req, res, machine) {
       if (ev.session_title) s.title = ev.session_title;
       break;
     case 'UserPromptSubmit':
-      s.status = 'working'; s.activity = 'Thinking…'; s.activityTool = null; s.lastPrompt = clip(ev.prompt, 400);
-      if (!s.firstPrompt) s.firstPrompt = clip(ev.prompt, 200);
+      s.status = 'working'; s.activity = 'Thinking…'; s.activityTool = null;
+      if (kind.kind === 'user' || kind.kind === 'project') s.lastPrompt = clip(kind.text, 400);
+      if (kind.kind === 'user' && !s.firstPrompt) s.firstPrompt = clip(kind.text, 200);
       break;
     case 'PreToolUse':
-      s.status = 'working'; s.activity = describeTool(ev.tool_name, ev.tool_input); s.activityTool = ev.tool_name;
+      s.status = 'working';
+      if (!quiet) { s.activity = describeTool(ev.tool_name, ev.tool_input); s.activityTool = ev.tool_name; }
       break;
     case 'PostToolUse':
       s.status = 'working';
@@ -270,17 +400,12 @@ function rawText(o) {
   return typeof c === 'string' ? c : Array.isArray(c) ? (c.find((x) => x.type === 'text') || {}).text : null;
 }
 
-function promptText(o) {
-  const t = rawText(o);
-  const env = unwrapEnvelope(t);
-  if (env) return env.text;
-  return t && !t.startsWith('<') ? t : null;
-}
-
-// Best available title: the app's own, a project thread's task, the transcript summary, or the first prompt.
+// Best available title: the desktop app's, Claude Code's own (status line, then transcript),
+// a [thread:] label, the transcript summary, or the first thing you typed. A project thread's
+// relayed task is not a title: it's usually a reminder or a handoff note.
 function titleOf(s) {
   const first = s.firstPrompt && !s.firstPrompt.startsWith('<') && !s.projectThread ? s.firstPrompt : null;
-  return s.title || s.threadTitle || s.envelopeTitle || s.summary || first || null;
+  return s.title || s.sessionName || s.customTitle || s.aiTitle || s.threadTitle || s.agentName || s.summary || first || null;
 }
 
 function scanTranscripts() {
@@ -295,6 +420,7 @@ function scanTranscripts() {
       const s = getSession(f.slice(0, -6));
       s.transcript = s.transcript || file;
       s.lastActivity = Math.max(s.lastActivity, st.mtimeMs);
+      if (s.metaMtime !== st.mtimeMs) { s.metaMtime = st.mtimeMs; try { readTailMeta(s, file, st.size); } catch {} }
       if (s.scanned) continue;
       s.scanned = true;
       try {
@@ -302,20 +428,139 @@ function scanTranscripts() {
           let o; try { o = JSON.parse(line); } catch { continue; }
           if (o.cwd && !s.cwd) s.cwd = o.cwd;
           if (o.type === 'summary' && o.summary && !s.summary) s.summary = o.summary;
-          if (o.type === 'user' && !o.isMeta && !s.firstPrompt) {
-            const env = unwrapEnvelope(rawText(o));
-            if (env) {
-              s.projectThread = true; s.envelopeTitle = env.title; s.projectId = env.coordinator; s.threadTitle = env.thread || s.threadTitle;
-              if (env.label && env.coordinator) projectLabels[env.coordinator] = env.label;
-            }
-            const t = promptText(o); if (t) s.firstPrompt = clip(t, 200);
+          if (o.type === 'user' && !o.isMeta && !s.firstPrompt && !s.projectThread) {
+            const k = classifyPrompt(rawText(o));
+            if (k.kind === 'project') noteProject(s, k);
+            if (k.kind === 'user') s.firstPrompt = clip(k.text, 200);
           }
-          if (s.cwd && s.firstPrompt) break;
+          if (s.cwd && (s.firstPrompt || s.projectThread)) break;
         }
       } catch {}
       if (!s.projectCwd) s.projectCwd = s.cwd;
     }
   }
+}
+
+// Titles, model, context, cost and plan from the end of a local transcript.
+function readTailMeta(s, file, size) {
+  const len = Math.min(size, 256 * 1024);
+  const fd = fs.openSync(file, 'r');
+  const buf = Buffer.alloc(len);
+  try { fs.readSync(fd, buf, 0, len, size - len); } finally { fs.closeSync(fd); }
+  const lines = buf.toString('utf8').split('\n');
+  if (len < size) lines.shift();
+  for (const line of lines) {
+    if (!/"type":"(custom-title|ai-title|agent-name|summary|cost-state|assistant)"/.test(line)) continue;
+    if (line.includes('"type":"assistant"') && !line.includes('"usage"') && !line.includes('TodoWrite')) continue;
+    try { applyMeta(s, JSON.parse(line)); } catch {}
+  }
+}
+
+// ---------- usage: tokens and estimated cost per day, from local transcripts ----------
+// Read incrementally: each file is parsed once, then only what was appended since.
+const usageFiles = new Map(); // file -> { offset, ids: Set, cost, project }
+const usageDays = new Map();  // 'YYYY-MM-DD' -> { tokens, cost, models: {}, projects: {} }
+let usageBusy = false, usageReady = false;
+
+const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+function addUsage(day, field, key, n) {
+  const d = usageDays.get(day) || { tokens: 0, cost: 0, models: {}, projects: {} };
+  usageDays.set(day, d);
+  d[field] += n;
+  if (key) { d.models[key.model] = (d.models[key.model] || 0) + (field === 'tokens' ? n : 0); d.projects[key.project] = (d.projects[key.project] || 0) + (field === 'tokens' ? n : 0); }
+}
+
+function transcriptFiles() {
+  const out = [];
+  for (const dir of listDirs(PROJECTS_DIR)) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch {}
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.jsonl')) out.push({ file: path.join(dir, e.name), session: e.name.slice(0, -6) });
+      // Subagents spend tokens too; their transcripts sit in <session>/subagents/.
+      if (e.isDirectory()) {
+        const sub = path.join(dir, e.name, 'subagents');
+        try { for (const f of fs.readdirSync(sub)) if (f.endsWith('.jsonl')) out.push({ file: path.join(sub, f), session: e.name }); } catch {}
+      }
+    }
+  }
+  return out;
+}
+
+async function scanUsage() {
+  if (usageBusy) return;
+  usageBusy = true;
+  const cutoff = Date.now() - HISTORY_DAYS * 864e5;
+  try {
+    for (const { file, session } of transcriptFiles()) {
+      let st; try { st = fs.statSync(file); } catch { continue; }
+      if (st.mtimeMs < cutoff) continue;
+      let u = usageFiles.get(file);
+      if (!u) { u = { offset: 0, ids: new Set(), cost: 0, lastTs: st.mtimeMs, rest: '' }; usageFiles.set(file, u); }
+      if (st.size <= u.offset) continue;
+      const s = sessions.get(session);
+      const project = projectName(s ? s.projectCwd || s.cwd : path.basename(path.dirname(file)));
+      const fh = await fs.promises.open(file, 'r');
+      try {
+        const CHUNK = 4 << 20;
+        while (u.offset < st.size) {
+          const buf = Buffer.alloc(Math.min(CHUNK, st.size - u.offset));
+          const { bytesRead } = await fh.read(buf, 0, buf.length, u.offset);
+          if (!bytesRead) break;
+          u.offset += bytesRead;
+          const lines = (u.rest + buf.toString('utf8', 0, bytesRead)).split('\n');
+          u.rest = lines.pop();
+          for (const line of lines) usageLine(u, line, project, cutoff);
+        }
+      } finally { await fh.close(); }
+    }
+  } catch (e) { console.error('usage scan failed', e.message); }
+  usageBusy = false;
+  usageReady = true;
+  broadcast();
+}
+
+function usageLine(u, line, project, cutoff) {
+  if (line.includes('"type":"cost-state"')) {
+    // Claude Code's own running cost estimate for the session; count what it added since last time.
+    let o; try { o = JSON.parse(line); } catch { return; }
+    const c = Number(o.totalCostUSD) || 0;
+    if (c > u.cost && u.lastTs >= cutoff) addUsage(dayKey(u.lastTs), 'cost', null, c - u.cost);
+    u.cost = c;
+    return;
+  }
+  if (!line.includes('"type":"assistant"') || !line.includes('"usage"')) return;
+  let o; try { o = JSON.parse(line); } catch { return; }
+  const m = o.message || {}, use = m.usage;
+  if (!use || m.model === '<synthetic>') return;
+  const ts = Date.parse(o.timestamp) || u.lastTs;
+  u.lastTs = ts;
+  const id = m.id || o.requestId || o.uuid;
+  if (id && u.ids.has(id)) return; // one message is written as several lines
+  if (id) u.ids.add(id);
+  if (ts < cutoff) return;
+  const n = (use.input_tokens || 0) + (use.output_tokens || 0) + (use.cache_creation_input_tokens || 0) + (use.cache_read_input_tokens || 0);
+  addUsage(dayKey(ts), 'tokens', { model: modelLabel({ model: m.model }) || m.model, project }, n);
+}
+
+function usageSnapshot() {
+  const days = [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const models = {}, projects = {};
+  let total = 0, cost = 0, week = 0;
+  const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  for (let i = HISTORY_DAYS - 1; i >= 0; i--) {
+    const d = new Date(today); d.setDate(today.getDate() - i);
+    const k = dayKey(d), v = usageDays.get(k) || { tokens: 0, cost: 0, models: {}, projects: {} };
+    days.push({ day: k, tokens: v.tokens, cost: Math.round(v.cost * 100) / 100 });
+    total += v.tokens; cost += v.cost;
+    if (d >= monday) week += v.tokens;
+    for (const [n, x] of Object.entries(v.models)) models[n] = (models[n] || 0) + x;
+    for (const [n, x] of Object.entries(v.projects)) projects[n] = (projects[n] || 0) + x;
+  }
+  const top = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, tokens]) => ({ name, tokens }));
+  return { ready: usageReady, days, total, week, today: days[days.length - 1], cost: Math.round(cost * 100) / 100,
+    models: top(models), projects: top(projects), quota };
 }
 
 function scan() {
@@ -338,16 +583,40 @@ function transcriptTail(s, maxItems = 60) {
     let o; try { o = JSON.parse(line); } catch { continue; }
     if (o.isMeta || o.isSidechain) continue;
     if (o.type === 'user') {
-      const t = promptText(o);
-      if (t) items.push({ role: 'user', text: clip(t, 2000), ts: o.timestamp });
+      const t = rawText(o);
+      if (!t) continue; // tool results
+      const k = classifyPrompt(t);
+      if (k.text) items.push({ role: k.kind === 'system' ? 'system' : 'user', text: clip(k.kind === 'command' ? `You ran ${k.text}` : k.text, 2000), ts: o.timestamp });
     } else if (o.type === 'assistant' && Array.isArray(o.message && o.message.content)) {
       for (const part of o.message.content) {
         if (part.type === 'text' && part.text && part.text.trim()) items.push({ role: 'assistant', text: clip(part.text, 3000), ts: o.timestamp });
-        else if (part.type === 'tool_use') items.push({ role: 'tool', tool: part.name, text: describeTool(part.name, part.input), ts: o.timestamp });
+        else if (part.type === 'tool_use' && !QUIET_TOOL.test(part.name)) items.push({ role: 'tool', tool: part.name, text: describeTool(part.name, part.input), ts: o.timestamp });
       }
     }
   }
   return items.slice(-maxItems);
+}
+
+// ---------- risk labels for permission requests ----------
+// Flags worth a second look. Irreversible ones need a press-and-hold on the dashboard.
+const RISKS = [
+  ['irreversible', /\brm\s+(-\w*[rf]\w*\s+)+|\bgit\s+(reset\s+--hard|clean\s+-\w*f|push\b[^\n]*(\s--force\b|\s-f\b|--force-with-lease))|\bgit\s+branch\s+-D\b|\bdrop\s+(table|database)\b|\btruncate\s+table\b|\bmkfs\b|\bdd\s+if=|\b(shutdown|reboot|poweroff)\b|\bdocker\s+(rm|rmi|volume\s+rm|system\s+prune)\b|\bkubectl\s+delete\b|\bterraform\s+destroy\b|Remove-Item\b[^\n]*-Recurse/i],
+  ['publishes', /\bgit\s+push\b|\b(npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bcargo\s+publish\b|\bgh\s+(pr\s+(create|merge)|release\s+create|repo\s+create)\b|\bdocker\s+push\b|\bdeploy\b/i],
+  ['network', /\b(curl|wget|ssh|scp|rsync|Invoke-WebRequest|iwr)\b/i],
+  ['privileged', /\bsudo\b|\bchmod\s+-R\b|\bchown\s+-R\b/i],
+];
+function riskOf(tool, input = {}, cwd) {
+  const flags = [];
+  if (tool === 'Bash' || tool === 'PowerShell') {
+    for (const [name, re] of RISKS) if (re.test(input.command || '')) flags.push(name);
+  }
+  if (tool === 'WebFetch') flags.push('network');
+  const file = input.file_path || input.notebook_path;
+  // Paths may come from another OS, so compare them as plain strings.
+  const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  if (file && cwd && !(norm(file) + '/').startsWith(norm(projectDir(cwd)) + '/')) flags.push('outside the project');
+  if (/^mcp__.+__(delete|remove|destroy|drop|purge|trash|redeploy|restart|shutdown|reboot)/i.test(tool || '')) flags.push('irreversible');
+  return { risks: [...new Set(flags)], hold: flags.includes('irreversible') };
 }
 
 // ---------- snapshot + SSE ----------
@@ -360,6 +629,15 @@ function snapshot() {
   const pendingBySession = {};
   for (const p of pending.values()) pendingBySession[p.sessionId] = (pendingBySession[p.sessionId] || 0) + 1;
   const list = [];
+  // A Project without a label is named after the repo most of its threads work in.
+  const repoVotes = {};
+  for (const s of sessions.values()) {
+    if (!s.projectThread || !s.projectId) continue;
+    const k = canonProject(s.projectId), n = projectName(projectDir(s.projectCwd || s.cwd));
+    if (!s.cwd && !s.projectCwd) continue;
+    (repoVotes[k] = repoVotes[k] || {})[n] = (repoVotes[k][n] || 0) + 1;
+  }
+  const projectTitle = (k) => projectLabels[k] || Object.entries(repoVotes[k] || {}).sort((a, b) => b[1] - a[1]).map(([n]) => n)[0] || null;
   for (const s of sessions.values()) {
     if (s.archived && !pendingBySession[s.id]) continue;
     if (!s.live && s.lastActivity < cutoff) continue;
@@ -368,24 +646,29 @@ function snapshot() {
     else if (status === 'approval' && Date.now() - s.lastActivity > 10 * 60e3) status = 'idle';
     else if (status === 'working' && Date.now() - s.lastActivity > 15 * 60e3) status = 'stale';
     const dir = projectDir(s.projectCwd || s.cwd);
-    const fallback = `Session in ${projectName(dir)}${s.machine ? ` on ${s.machine}` : ''}`;
-    const lastPrompt = s.lastPrompt && s.lastPrompt.startsWith('<project_claude_message') ? (unwrapEnvelope(s.lastPrompt) || {}).text : s.lastPrompt;
+    const fallback = `${s.projectThread ? 'Thread' : 'Session'} in ${projectName(dir)}${s.machine ? ` on ${s.machine}` : ''}`;
+    // Prompts saved before they were classified may still be raw envelopes or notifications.
+    const k = s.lastPrompt && s.lastPrompt.startsWith('<') ? classifyPrompt(s.lastPrompt) : null;
+    const lastPrompt = k ? (k.kind === 'project' ? k.text : null) : s.lastPrompt;
+    const pkey = canonProject(s.projectId || 'unknown');
     const group = s.projectThread
-      ? { groupKind: 'project', groupKey: `project:${s.projectId || 'unknown'}`, groupName: projectLabels[s.projectId] || s.projectLabel || 'Unnamed project' }
+      ? { groupKind: 'project', groupKey: `project:${pkey}`, groupName: projectTitle(pkey) || s.projectLabel || 'Unnamed project', groupLabeled: !!projectLabels[pkey] }
       : { groupKind: 'standalone', groupKey: 'standalone', groupName: 'Standalone sessions' };
-    list.push({ id: s.id, title: titleOf(s) || fallback, untitled: !titleOf(s), machine: s.machine || null, projectThread: !!s.projectThread, ...group,
+    const title = titleOf(s);
+    list.push({ id: s.id, title: title || fallback, untitled: !title, machine: s.machine || null, projectThread: !!s.projectThread, ...group,
       project: s.machine ? `${s.machine}:${dir}` : dir, projectPath: dir, projectName: projectName(dir),
       status, live: s.live, desktop: s.desktop, lastActivity: s.lastActivity, activity: s.activity, activityTool: s.activityTool,
-      lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0 });
+      lastPrompt, lastMessage: s.lastMessage, mode: s.mode, pending: pendingBySession[s.id] || 0,
+      model: modelLabel(s), context: contextPct(s), cost: typeof s.cost === 'number' ? Math.round(s.cost * 100) / 100 : null, plan: s.todos || null });
   }
   list.sort((a, b) => b.lastActivity - a.lastActivity);
   const pend = [...pending.values()].sort((a, b) => a.createdAt - b.createdAt).map((p) => {
     const s = sessions.get(p.sessionId) || {};
     return { id: p.id, sessionId: p.sessionId, tool: p.tool, input: clipDeep(p.input), suggestions: p.suggestions,
-      createdAt: p.createdAt, summary: describeTool(p.tool, p.input),
+      createdAt: p.createdAt, summary: describeTool(p.tool, p.input), ...riskOf(p.tool, p.input, s.projectCwd || s.cwd),
       sessionTitle: titleOf(s) || `Session in ${projectName(s.projectCwd || s.cwd)}`, projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
   });
-  return { now: Date.now(), sessions: list, pending: pend };
+  return { now: Date.now(), sessions: list, pending: pend, usage: usageSnapshot() };
 }
 
 let bcTimer = null;
@@ -408,7 +691,7 @@ function saveState() {
     saveTimer = null;
     const keep = [...sessions.values()].filter((s) => s.machine && Date.now() - s.lastActivity < HISTORY_DAYS * 864e5)
       .map(({ demoTranscript, ...s }) => s);
-    fs.writeFile(STATE_FILE, JSON.stringify({ sessions: keep, labels: projectLabels }), () => {});
+    fs.writeFile(STATE_FILE, JSON.stringify({ sessions: keep, labels: projectLabels, aliases: projectAlias, quota }), () => {});
   }, 2000);
 }
 function loadState() {
@@ -416,11 +699,23 @@ function loadState() {
   try { saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
   const list = Array.isArray(saved) ? saved : saved.sessions || [];
   Object.assign(projectLabels, saved.labels || {});
+  Object.assign(projectAlias, saved.aliases || {});
+  if (saved.quota) quota = saved.quota;
   for (const s of list) {
     // Whatever it was doing before the restart is unknown now.
     if (s.status === 'working' || s.status === 'approval') { s.status = 'idle'; s.activity = null; }
-    const env = unwrapEnvelope(s.firstPrompt); // sessions saved before envelopes were understood
-    if (env) { s.projectThread = true; s.projectId = s.projectId || env.coordinator; }
+    // Sessions saved before prompts were classified: re-read what they started with.
+    const k = classifyPrompt(s.firstPrompt);
+    if (k.kind === 'project') noteProject(s, k);
+    if (k.kind !== 'user') s.firstPrompt = null;
+    delete s.envelopeTitle;
+    for (const i of s.log || []) {
+      if (i.role !== 'user' || !i.text || !i.text.startsWith('<')) continue;
+      const c = classifyPrompt(i.text);
+      i.role = c.kind === 'system' ? 'system' : 'user';
+      i.text = c.kind === 'command' ? `You ran ${c.text}` : c.text;
+    }
+    s.log = (s.log || []).filter((i) => i.text && !(i.role === 'tool' && QUIET_TOOL.test(i.tool || '')));
     sessions.set(s.id, s);
   }
 }
@@ -478,6 +773,18 @@ async function handle(req, res) {
 
   try {
     if (req.method === 'POST' && url.pathname === '/api/hook') return onHook(await readBody(req), req, res, who.machine);
+    if (req.method === 'POST' && url.pathname === '/api/status') { onStatus(await readBody(req), who.machine); broadcast(); return json(res, 200, {}); }
+    if (req.method === 'POST' && url.pathname === '/api/meta') {
+      const b = await readBody(req);
+      if (b.session_id && Array.isArray(b.lines)) {
+        const s = getSession(String(b.session_id));
+        if (who.machine) s.machine = who.machine;
+        s.lastActivity = Math.max(s.lastActivity, Date.now());
+        for (const o of b.lines.slice(0, 20)) applyMeta(s, o);
+        broadcast();
+      }
+      return json(res, 200, {});
+    }
     if (!who.admin) return json(res, 403, { error: 'forbidden' });
     if (req.method === 'GET' && url.pathname === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
@@ -494,11 +801,7 @@ async function handle(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/transcript') {
       const s = sessions.get(url.searchParams.get('id') || '');
       const items = !s ? [] : s.demoTranscript || (s.machine ? [] : transcriptTail(s));
-      const out = (items.length ? items : (s && s.log) || []).map((i) => {
-        const env = i.role === 'user' && unwrapEnvelope(i.text); // entries logged before envelopes were unwrapped
-        return env ? { ...i, text: env.text } : i;
-      });
-      return json(res, 200, { items: out });
+      return json(res, 200, { items: items.length ? items : (s && s.log) || [] });
     }
   } catch (e) {
     return json(res, 400, { error: e.message });
@@ -525,6 +828,8 @@ LISTEN.forEach((addr, i) => {
     loadState();
     scan();
     setInterval(scan, 10e3);
+    scanUsage();
+    setInterval(scanUsage, 60e3);
   });
 });
 
@@ -542,6 +847,18 @@ function seedDemo() {
     lastPrompt: 'Switch the solver to damped least squares near singularities', activityTool: 'Grep', activity: 'Grep "jacobian"' });
   add('d5', { title: 'Write the v0.4 release notes', projectCwd: '/home/dev/pixel-forge', status: 'idle', live: false, lastActivity: t - 3 * 3600e3,
     lastMessage: 'Drafted release notes covering the new tile editor, palette import and 23 bug fixes.' });
+  Object.assign(sessions.get('d1'), { model: 'claude-opus-5-5', ctxTokens: 61e3, todos: { done: 2, total: 5, current: 'Running the integration tests' } });
+  Object.assign(sessions.get('d2'), { model: 'claude-sonnet-5-5', ctxTokens: 23e3 });
+  Object.assign(sessions.get('d3'), { model: 'claude-opus-5-5', ctxTokens: 142e3 });
+  Object.assign(sessions.get('d4'), { model: 'claude-opus-5-5', ctxTokens: 168e3, todos: { done: 3, total: 6, current: 'Adding damping near singular poses' } });
+  quota = { five_hour: { used_percentage: 46, resets_at: Math.round(t / 1000) + 2.3 * 3600 }, seven_day: { used_percentage: 63, resets_at: Math.round(t / 1000) + 2.6 * 86400 }, at: t };
+  for (let i = 0; i < HISTORY_DAYS; i++) {
+    const day = dayKey(t - i * 864e5), wk = new Date(t - i * 864e5).getDay() % 6 === 0;
+    const tokens = Math.round((wk ? 4e6 : 14e6) * (0.4 + Math.random()) * (i === 0 ? 0.6 : 1));
+    usageDays.set(day, { tokens, cost: tokens / 1e6 * 1.9, models: { 'Opus 5.5': tokens * 0.8, 'Sonnet 5.5': tokens * 0.2 },
+      projects: { 'aurora-api': tokens * 0.5, 'robot-arm': tokens * 0.3, 'pixel-forge': tokens * 0.2 } });
+  }
+  usageReady = true;
   projectLabels['demo-coordinator'] = 'Aurora launch';
   for (const id of ['d1', 'd2']) Object.assign(sessions.get(id), { projectThread: true, projectId: 'demo-coordinator' });
   sessions.get('d4').demoTranscript = [
@@ -560,6 +877,7 @@ function seedDemo() {
     [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]);
   hold('d1', 'Bash', { command: 'docker compose up -d redis && npm run test:integration', description: 'Start Redis and run the integration tests' },
     [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'docker compose up:*' }], behavior: 'allow', destination: 'localSettings' }]);
+  hold('d1', 'Bash', { command: 'git push --force origin rate-limit', description: 'Overwrite the remote branch with the rebased one' }, []);
   sessions.get('d1').status = 'approval';
   // Keep the working sessions looking busy.
   const steps = [['Read', 'Read kinematics.py'], ['Edit', 'Edit solver.py'], ['Bash', '$ pytest tests/test_ik.py -q'], ['Grep', 'Grep "singular"']];

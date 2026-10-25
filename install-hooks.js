@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadConfig, HOOK_EVENTS: EVENTS } = require('./config');
+const { loadConfig, saveConfig, HOOK_EVENTS: EVENTS } = require('./config');
 
 const cfg = loadConfig();
 const SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
@@ -37,6 +37,22 @@ if (!uninstall) {
 }
 if (!Object.keys(settings.hooks).length) delete settings.hooks;
 
+// The status line is how Claude Code shares usage limits, model and context. Ours forwards that
+// data and then runs whatever status line was there before, so nothing visible changes.
+const STATUS = path.join(__dirname, 'statusline.js');
+const ourStatus = (sl) => sl && typeof sl.command === 'string' && sl.command.includes(STATUS);
+if (uninstall) {
+  if (ourStatus(settings.statusLine)) {
+    if (cfg.prevStatusLine) settings.statusLine = { type: 'command', command: cfg.prevStatusLine };
+    else delete settings.statusLine;
+  }
+  delete cfg.prevStatusLine;
+} else if (!ourStatus(settings.statusLine)) {
+  if (settings.statusLine && settings.statusLine.command) cfg.prevStatusLine = settings.statusLine.command;
+  settings.statusLine = { type: 'command', command: `node "${STATUS}"` };
+}
+saveConfig(cfg);
+
 fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
 fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2) + '\n');
-console.log(uninstall ? `Removed Claude Edge hooks from ${SETTINGS}` : `Installed Claude Edge hooks in ${SETTINGS} -> ${URL}`);
+console.log(uninstall ? `Removed Claude Edge hooks and status line from ${SETTINGS}` : `Installed Claude Edge hooks and status line in ${SETTINGS} -> ${URL}`);

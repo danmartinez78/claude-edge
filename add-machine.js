@@ -10,6 +10,8 @@
 // (user@host, an alias from ~/.ssh/config). The remote machine needs python3.
 // Restart the dashboard server afterwards so it listens on the network address.
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { loadConfig, saveConfig, HOOK_EVENTS } = require('./config');
@@ -46,30 +48,63 @@ const url = `http://${host}:${cfg.port}/api/hook`;
 const hooks = Object.fromEntries(Object.entries(HOOK_EVENTS).map(([ev, timeout]) =>
   [ev, { type: 'http', url, timeout, headers: { Authorization: `Bearer ${cfg.machines[name] || ''}` } }]));
 
+// The reporter sends what only this machine can read (transcript titles, model, context, plan)
+// and forwards the status line's usage data. See edge_report.py.
+const reporter = fs.readFileSync(path.join(__dirname, 'edge_report.py'), 'utf8');
+
 // Runs on the remote machine: back up settings.json, drop any earlier dashboard hooks,
-// add ours, then check the dashboard is reachable from there.
+// add ours and the reporter, then check the dashboard is reachable from there.
 const py = `
 import json, os, shutil, time, urllib.request
 port = ${JSON.stringify(String(cfg.port))}
 hooks = json.loads(${JSON.stringify(JSON.stringify(hooks))})
+edge = json.loads(${JSON.stringify(JSON.stringify({ url: `http://${host}:${cfg.port}`, token: cfg.machines[name] || '' }))})
+reporter = ${JSON.stringify(reporter)}
 uninstall = ${uninstall ? 'True' : 'False'}
 path = os.path.expanduser(os.path.join(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"), "settings.json"))
 os.makedirs(os.path.dirname(path), exist_ok=True)
+rdir = os.path.join(os.path.dirname(path), "claude-edge")
+script = os.path.join(rdir, "edge_report.py")
 settings = {}
 if os.path.exists(path):
     shutil.copy(path, "%s.bak-claude-edge-%d" % (path, int(time.time())))
     with open(path) as f:
         settings = json.load(f)
-ours = lambda h: h.get("type") == "http" and str(h.get("url", "")).endswith(":%s/api/hook" % port)
+ours = lambda h: (h.get("type") == "http" and str(h.get("url", "")).endswith(":%s/api/hook" % port)) or "edge_report.py" in str(h.get("command", ""))
 allh = settings.get("hooks", {})
 for ev in list(allh):
     groups = [dict(g, hooks=[h for h in g.get("hooks", []) if not ours(h)]) for g in allh[ev]]
     allh[ev] = [g for g in groups if g["hooks"]]
     if not allh[ev]:
         del allh[ev]
-if not uninstall:
+prev = {}
+try:
+    with open(os.path.join(rdir, "edge.json")) as f:
+        prev = json.load(f)
+except Exception:
+    pass
+sl = settings.get("statusLine") or {}
+our_sl = "edge_report.py" in str(sl.get("command", ""))
+if uninstall:
+    if our_sl:
+        if prev.get("prev_status"):
+            settings["statusLine"] = {"type": "command", "command": prev["prev_status"]}
+        else:
+            settings.pop("statusLine", None)
+    shutil.rmtree(rdir, ignore_errors=True)
+else:
+    os.makedirs(rdir, exist_ok=True)
+    with open(script, "w") as f:
+        f.write(reporter)
+    edge["prev_status"] = prev.get("prev_status") if our_sl else sl.get("command")
+    with open(os.path.join(rdir, "edge.json"), "w") as f:
+        json.dump(edge, f)
+    os.chmod(os.path.join(rdir, "edge.json"), 0o600)
     for ev, h in hooks.items():
         allh.setdefault(ev, []).append({"hooks": [h]})
+    for ev in ("SessionStart", "Stop"):
+        allh.setdefault(ev, []).append({"hooks": [{"type": "command", "command": "python3 '%s' hook" % script, "timeout": 5}]})
+    settings["statusLine"] = {"type": "command", "command": "python3 '%s' status" % script}
 if allh:
     settings["hooks"] = allh
 else:

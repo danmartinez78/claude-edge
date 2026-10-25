@@ -126,6 +126,39 @@
   .st-approval .activity .ico { color: var(--amber); }
   .preview { position: relative; color: var(--text-2); font-size: .72rem; line-height: 1.45; margin-top: .15rem; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   .review { color: var(--amber); font-size: .68rem; font-weight: 600; display: flex; align-items: center; gap: .3rem; }
+  .card-meta { position: relative; display: flex; align-items: center; gap: .55rem; font: 500 .6rem/1 var(--mono); color: var(--text-3); min-width: 0; }
+  .card-meta .mdl { color: var(--text-2); white-space: nowrap; }
+  .meter { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
+  .meter i { position: relative; display: block; width: 2.4rem; height: .26rem; border-radius: 1rem; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .meter i b { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--text-3); }
+  .meter.warn i b { background: var(--amber); } .meter.hot i b { background: var(--red); } .meter.warn, .meter.hot { color: var(--text-2); }
+  .plan { display: flex; flex-direction: column; gap: .25rem; }
+  .plan-bar { display: flex; gap: .15rem; }
+  .plan-bar i { flex: 1; height: .22rem; border-radius: 1rem; background: rgba(255, 255, 255, .08); }
+  .plan-bar i.d { background: var(--sage); } .plan-bar i.c { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  .plan-step { font-size: .64rem; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .plan-step b { color: var(--text-3); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: .3rem; }
+
+  /* usage (overview) */
+  .usage { display: flex; flex-direction: column; gap: .55rem; }
+  .sec-h { display: flex; align-items: baseline; gap: .5rem; color: var(--text-3); font-size: .56rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+  .sec-h span { margin-left: auto; letter-spacing: .02em; text-transform: none; font-weight: 500; font-size: .6rem; }
+  .q { display: grid; grid-template-columns: 4.2rem minmax(0, 1fr) 2.6rem; align-items: center; column-gap: .7rem; row-gap: .2rem; }
+  .q-name { font-size: .74rem; font-weight: 600; color: var(--text-2); }
+  .q-pct { font: 600 .95rem/1 var(--serif); text-align: right; font-variant-numeric: tabular-nums; }
+  .q-bar { position: relative; height: .5rem; border-radius: 1rem; background: rgba(255, 255, 255, .07); }
+  .q-bar b { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--text-2); }
+  .q-bar u { position: absolute; top: -.2rem; bottom: -.2rem; width: 2px; margin-left: -1px; background: var(--text); opacity: .55; border-radius: 2px; }
+  .q.warn .q-bar b { background: var(--amber); } .q.warn .q-pct { color: var(--amber); }
+  .q.hot .q-bar b { background: var(--red); } .q.hot .q-pct { color: var(--red); }
+  .q-sub { grid-column: 2 / span 2; color: var(--text-3); font-size: .6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .q-sub.over { color: var(--amber); }
+  .q-none { color: var(--text-3); font-size: .66rem; line-height: 1.4; }
+  .chart { display: flex; align-items: flex-end; gap: .14rem; height: 2.6rem; }
+  .chart i { flex: 1; min-height: 2px; border-radius: .15rem .15rem 0 0; background: rgba(255, 244, 228, .16); }
+  .chart i.today { background: var(--accent); }
+  .u-nums { display: flex; gap: 1.1rem; font-size: .62rem; color: var(--text-3); }
+  .u-nums b { display: block; font: 600 .95rem/1.1 var(--serif); color: var(--text); font-variant-numeric: tabular-nums; }
 
   .status { display: inline-flex; align-items: center; gap: .38rem; font-size: .6rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
   .status .dot { width: .42rem; height: .42rem; border-radius: 50%; background: currentColor; }
@@ -153,14 +186,14 @@
   .pv { display: flex; flex-direction: column; min-height: 0; flex: 1; animation: fade .3s var(--ease) both; }
 
   /* overview */
-  .ov { padding: 1.5rem 1.7rem 1.4rem; justify-content: space-between; }
-  .clock { font: 400 4.6rem/0.95 var(--serif); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .ov { padding: 1.3rem 1.6rem 1.3rem; justify-content: space-between; gap: .9rem; }
+  .clock { font: 400 3.6rem/0.95 var(--serif); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
   .clock small { font-size: 1.3rem; color: var(--text-3); letter-spacing: 0; margin-left: .35rem; }
   .date { color: var(--text-2); font-size: .85rem; margin-top: .45rem; }
   .ov-msg { font: italic 400 1.05rem/1.35 var(--serif); color: var(--text-2); margin: 0; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .6rem; }
-  .stat { background: rgba(255, 255, 255, .025); box-shadow: inset 0 0 0 1px var(--hair); border-radius: .9rem; padding: .75rem .85rem; }
-  .stat b { display: block; font: 600 1.7rem/1 var(--serif); font-variant-numeric: tabular-nums; }
+  .stat { background: rgba(255, 255, 255, .025); box-shadow: inset 0 0 0 1px var(--hair); border-radius: .9rem; padding: .6rem .8rem; }
+  .stat b { display: block; font: 600 1.4rem/1 var(--serif); font-variant-numeric: tabular-nums; }
   .stat span { color: var(--text-3); font-size: .62rem; letter-spacing: .09em; text-transform: uppercase; font-weight: 700; display: flex; align-items: center; gap: .35rem; margin-top: .45rem; }
   .stat.amber b { color: var(--amber); } .stat.accent b { color: var(--accent); } .stat.sage b { color: var(--sage); }
 
@@ -196,6 +229,13 @@
   .btn.allow { background: var(--text); color: #1a1917; box-shadow: 0 .4rem 1.2rem rgba(0, 0, 0, .3); }
   .btn.always { background: rgba(255, 255, 255, .05); color: var(--text); box-shadow: inset 0 0 0 1px var(--hair-2); }
   .btn.busy { opacity: 1; filter: saturate(.6); }
+  .btn.hold { position: relative; overflow: hidden; }
+  .btn.hold::after { content: ""; position: absolute; inset: 0; background: rgba(217, 119, 87, .45); transform-origin: left; transform: scaleX(0); pointer-events: none; }
+  .btn.hold.pressing::after { transform: scaleX(1); transition: transform 1.2s linear; }
+  .risks { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: -.3rem; }
+  .risk { padding: .12rem .5rem; border-radius: .4rem; font-size: .6rem; font-weight: 700; letter-spacing: .03em; background: var(--amber-soft); color: var(--amber); }
+  .risk.irreversible { background: var(--red-soft); color: var(--red); }
+  .m.system { align-self: center; color: var(--text-3); font: .6rem/1.4 var(--mono); text-align: center; max-width: 90%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .defer { align-self: center; color: var(--text-3); font-size: .64rem; padding: .3rem .8rem; min-height: 1.8rem; }
 
   /* thread */
@@ -528,14 +568,27 @@ function cardHtml(s) {
       ${s.pending ? `<div class="review">Tap to review ${icon('right')}</div>`
         : `<div class="review muted">Waiting for approval in Claude${s.machine ? ` on ${esc(s.machine)}` : ''}</div>`}`;
   } else if (st === 'working') {
-    foot = `<div class="activity">${icon(toolIcon(s.activityTool))}<span>${esc(s.activity || 'Working…')}</span></div>`;
+    foot = `${planHtml(s.plan)}<div class="activity">${icon(toolIcon(s.activityTool))}<span>${esc(s.activity || 'Working…')}</span></div>`;
+  } else if (s.plan && s.plan.done < s.plan.total && isActive(s)) {
+    foot = planHtml(s.plan);
   }
+  const ctx = s.context == null ? '' : `<span class="meter ${s.context >= 90 ? 'hot' : s.context >= 70 ? 'warn' : ''}"><i><b style="width:${s.context}%"></b></i>${s.context}%</span>`;
+  const meta = s.model || ctx ? `<div class="card-meta">${s.model ? `<span class="mdl">${esc(s.model)}</span>` : ''}${ctx}${s.cost ? `<span>$${s.cost.toFixed(2)}</span>` : ''}</div>` : '';
   return `<button class="card st-${st} ${ui.session === s.id ? 'sel' : ''}" data-act="session" data-key="${esc(s.id)}">
     <div class="card-top">${statusHtml(st)}<span class="time">${ago(s.lastActivity)}</span></div>
-    <div class="card-proj">${esc([ui.project === null && s.groupKind === 'project' && s.groupName, s.projectName, s.machine].filter(Boolean).join(' · '))}</div>
+    <div class="card-proj">${esc([ui.project === null && s.groupKind === 'project' && s.groupName, s.projectName !== s.groupName && s.projectName, s.machine].filter(Boolean).join(' · '))}</div>
     <div class="card-title${s.untitled ? ' untitled' : ''}">${esc(s.title)}</div>
+    ${meta}
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;
+}
+
+// Plan progress from Claude's to-do list: one segment per step.
+function planHtml(p) {
+  if (!p || !p.total) return '';
+  const segs = Array.from({ length: Math.min(p.total, 16) }, (_, i) => `<i class="${i < p.done ? 'd' : i === p.done && p.current ? 'c' : ''}"></i>`).join('');
+  return `<div class="plan"><div class="plan-bar">${segs}</div>
+    <div class="plan-step"><b>${p.done}/${p.total}</b>${esc(p.current || (p.done === p.total ? 'Plan complete' : ''))}</div></div>`;
 }
 
 function updateLaneFade() {
@@ -559,15 +612,59 @@ function clockParts() {
   return { time: m ? m[1] : t, ampm: m ? m[2] : '', date: d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }) };
 }
 
+const fmtTokens = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n || 0));
+function until(sec) {
+  const d = Math.max(0, sec * 1000 - now()) / 60e3;
+  if (d < 60) return `in ${Math.round(d)}m`;
+  if (d < 48 * 60) return `in ${Math.floor(d / 60)}h ${String(Math.round(d % 60)).padStart(2, '0')}m`;
+  return new Date(sec * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric' });
+}
+
+// One limit window: usage bar, a tick where an even pace would be by now, and where this pace lands.
+function quotaRow(name, w, hours) {
+  if (!w || w.used_percentage == null) return '';
+  const pct = Math.round(w.used_percentage);
+  const start = w.resets_at * 1000 - hours * 3600e3;
+  const elapsed = Math.min(1, Math.max(0.001, (now() - start) / (hours * 3600e3)));
+  const cls = pct >= 90 ? 'hot' : pct >= 70 ? 'warn' : '';
+  let sub = `Resets ${until(w.resets_at)}`, over = false;
+  if (elapsed > 0.05 && pct > 0) {
+    const projected = pct / elapsed;
+    if (projected >= 100) {
+      const hitAt = start + (100 / pct) * (now() - start);
+      sub += ` · at this pace, the limit at ${new Date(hitAt).toLocaleString([], hours > 24 ? { weekday: 'short', hour: 'numeric' } : { hour: 'numeric', minute: '2-digit' })}`;
+      over = true;
+    } else sub += ` · on pace for ${Math.round(projected)}%`;
+  }
+  return `<div class="q ${cls}"><span class="q-name">${name}</span>
+    <div class="q-bar"><b style="width:${Math.min(100, pct)}%"></b><u style="left:${(elapsed * 100).toFixed(1)}%"></u></div>
+    <span class="q-pct">${pct}%</span><span class="q-sub${over ? ' over' : ''}">${esc(sub)}</span></div>`;
+}
+
+function usageHtml(u) {
+  if (!u) return '';
+  const q = u.quota;
+  const fresh = q && now() - q.at < 6 * 3600e3;
+  const rows = fresh ? quotaRow('5 hours', q.five_hour, 5) + quotaRow('Week', q.seven_day, 168) : '';
+  const limits = rows || `<div class="q-none">Your plan's limits show up here once a Claude Code session in a terminal updates its status line.</div>`;
+  const max = Math.max(1, ...u.days.map((d) => d.tokens));
+  const chart = u.days.map((d, i) => `<i class="${i === u.days.length - 1 ? 'today' : ''}" style="height:${Math.max(2, (d.tokens / max) * 100).toFixed(1)}%"></i>`).join('');
+  return `<div class="usage">
+    <div class="sec-h">Plan usage${fresh ? `<span>updated ${ago(q.at)}${q.machine ? ` · ${esc(q.machine)}` : ''}</span>` : ''}</div>
+    ${limits}
+    <div class="sec-h" style="margin-top:.35rem">Last 30 days<span>${u.ready ? 'this PC' : 'reading transcripts…'}</span></div>
+    <div class="chart">${chart}</div>
+    <div class="u-nums"><div><b>${fmtTokens(u.today.tokens)}</b>today</div><div><b>${fmtTokens(u.week)}</b>this week</div>
+      <div><b>${fmtTokens(u.total)}</b>30 days</div>${u.cost ? `<div><b>$${Math.round(u.cost).toLocaleString()}</b>at API prices</div>` : ''}</div>
+  </div>`;
+}
+
 function overviewHtml() {
   const c = counts(data.sessions);
   const k = clockParts();
-  const msg = c.approval ? 'Something is waiting for your approval.'
-    : c.working ? `Claude is working in ${c.working} session${c.working === 1 ? '' : 's'}.`
-    : c.idle ? 'Sessions are waiting for your next message.' : 'All quiet. Tap a session to follow along.';
   return `<div class="pv ov">
     <div><div class="clock"><span id="clockT">${k.time}</span><small id="clockA">${k.ampm}</small></div><div class="date" id="clockD">${k.date}</div></div>
-    <p class="ov-msg">${msg}</p>
+    ${usageHtml(data.usage)}
     <div class="stats">
       <div class="stat accent"><b>${c.working}</b><span>${star(c.working > 0)} Working</span></div>
       <div class="stat amber"><b>${c.approval}</b><span>Needs you</span></div>
@@ -625,8 +722,10 @@ function approvalHtml() {
   const rule = ruleLabel(p.suggestions);
   const desc = (p.tool === 'Bash' || p.tool === 'PowerShell' || p.tool === 'Task' || p.tool === 'Agent') ? i.description : null;
   const b = ui.busy;
-  const btn = (choice, cls, ico, label, extra = '') => `<button class="btn ${cls} ${b === choice ? 'busy' : ''}" data-act="decide" data-key="${choice}" ${b || (choice === 'always' && !rule) ? 'disabled' : ''}>
-      <span class="row">${icon(ico)}${b === choice ? { allow: 'Allowing…', deny: 'Denying…', always: 'Saving…' }[choice] : label}</span>${extra}</button>`;
+  // Irreversible requests need a press-and-hold to allow, so a stray tap can't let them through.
+  const held = (choice) => p.hold && choice !== 'deny';
+  const btn = (choice, cls, ico, label, extra = '') => `<button class="btn ${cls} ${b === choice ? 'busy' : ''} ${held(choice) ? 'hold' : ''}" data-act="${held(choice) ? 'hold' : 'decide'}" data-key="${choice}" ${b || (choice === 'always' && !rule) ? 'disabled' : ''}>
+      <span class="row">${icon(ico)}${b === choice ? { allow: 'Allowing…', deny: 'Denying…', always: 'Saving…' }[choice] : held(choice) ? `Hold to ${label.toLowerCase()}` : label}</span>${extra}</button>`;
   return `<div class="pv ap" data-req="${esc(p.id)}">
     <div class="ap-top">${statusHtml('approval')}
       ${list.length > 1 ? `<div class="pager"><button data-act="req" data-key="${idx - 1}" ${idx === 0 ? 'disabled' : ''}>${icon('left')}</button>
@@ -635,6 +734,7 @@ function approvalHtml() {
     </div>
     <h2 class="ap-title">${esc(requestTitle(p))}</h2>
     ${desc ? `<div class="ap-desc">${esc(desc)}</div>` : ''}
+    ${(p.risks || []).length ? `<div class="risks">${p.risks.map((r) => `<span class="risk ${r}">${esc(r === 'irreversible' ? 'Can’t be undone' : r[0].toUpperCase() + r.slice(1))}</span>`).join('')}</div>` : ''}
     <div class="ctx"><span class="chip">${esc(p.projectName)}${p.machine ? ` · ${esc(p.machine)}` : ''}</span><span class="t">${esc(p.sessionTitle)}</span><span style="margin-left:auto;flex:none">${ago(p.createdAt)} ago</span></div>
     <div class="code">${codeHtml(p)}</div>
     <div class="actions">
@@ -723,6 +823,15 @@ document.addEventListener('click', (e) => {
     case 'review': ui.prevView = 'thread'; ui.view = 'approval'; renderPanel(); break;
   }
 });
+// Press-and-hold buttons: decide only after 1.2 s of continuous pressure.
+let holdTimer = null;
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target.closest('[data-act="hold"]'); if (!t || t.disabled) return;
+  t.classList.add('pressing');
+  holdTimer = setTimeout(() => { holdTimer = null; t.classList.remove('pressing'); decide(t.dataset.key); }, 1200);
+});
+const cancelHold = () => { clearTimeout(holdTimer); holdTimer = null; document.querySelectorAll('.pressing').forEach((x) => x.classList.remove('pressing')); };
+['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, cancelHold, true));
 $('lane').addEventListener('scroll', updateLaneFade, { passive: true });
 addEventListener('resize', updateLaneFade);
 

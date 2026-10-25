@@ -260,6 +260,31 @@
   .tool .ico { color: var(--accent); opacity: .8; font-size: .72rem; }
   .th-empty { margin: auto; color: var(--text-3); font: italic 1rem var(--serif); }
 
+  /* ---------- rows: mid-width screens (the Large iCUE widget slot) ----------
+     Sessions as a list of one-line rows; tapping a row expands it in place. */
+  .lane.rows { display: flex; flex-direction: column; gap: .45rem; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; -webkit-mask-image: none; mask-image: none; }
+  .row-item { flex: none; display: flex; flex-direction: column; gap: .5rem; padding: .7rem .9rem; border-radius: .9rem; text-align: left; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, var(--surface-2), var(--surface)); box-shadow: inset 0 0 0 1px var(--hair); animation: rise .35s var(--ease) both; }
+  .row-item.st-approval { box-shadow: inset 0 0 0 1.5px rgba(239, 189, 93, .55); }
+  .row-item.open { box-shadow: inset 0 0 0 1.5px var(--text-3); }
+  .row-item.st-approval.open { box-shadow: inset 0 0 0 2px var(--amber); }
+  .row-line { display: grid; grid-template-columns: 6.6rem minmax(0, 1fr) auto; align-items: center; column-gap: .8rem; }
+  .row-main { min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
+  .row-title { font: 600 .9rem/1.2 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-title.untitled { font-weight: 400; font-style: italic; color: var(--text-2); }
+  .row-sub { display: flex; gap: .5rem; min-width: 0; font-size: .62rem; color: var(--text-3); white-space: nowrap; }
+  .row-sub .what { overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); color: var(--text-2); }
+  .st-working .row-sub .what { color: var(--accent); }
+  .st-approval .row-sub .what { color: var(--amber); font-family: var(--sans); font-weight: 600; }
+  .row-sub .where { flex: none; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .row-end { display: flex; align-items: center; gap: .6rem; color: var(--text-3); font-size: .62rem; font-variant-numeric: tabular-nums; }
+  .row-end .ico { font-size: .8rem; transition: transform .2s var(--ease); }
+  .row-item.open .row-end .ico { transform: rotate(90deg); }
+  .row-more { display: flex; flex-direction: column; gap: .5rem; padding-left: 7.4rem; }
+  .row-more .preview { -webkit-line-clamp: 5; margin: 0; }
+  .row-actions { display: flex; gap: .5rem; }
+  .row-actions .ghost { margin: 0; }
+
   /* ---------- compact: small iCUE widget slots and narrow windows ----------
      One column: the session lane, or (after a tap or a new request) the panel in its place. */
   .compact-only { display: none !important; }
@@ -346,7 +371,7 @@ function toolIcon(t) {
 // ---------- state ----------
 const ui = { project: null, filter: 'active', view: 'overview', prevView: 'overview', session: null, req: null, busy: null };
 let data = { sessions: [], pending: [], now: Date.now() };
-let skew = 0, lastPendingIds = '', connected = false;
+let skew = 0, lastPendingIds = '', connected = false, pageBuild = null;
 
 const LABEL = { working: 'Working', approval: 'Needs you', idle: 'Your turn', ended: 'Ended', stale: 'Quiet', history: 'Idle' };
 const status = (s) => (!s.live && s.status === 'idle' ? 'history' : s.status);
@@ -372,7 +397,13 @@ function connect() {
   const es = new EventSource(`/api/events?t=${encodeURIComponent(token)}`);
   es.onopen = () => { connected = true; renderConn(); };
   es.onerror = () => { connected = false; renderConn(); };
-  es.onmessage = (e) => { data = JSON.parse(e.data); skew = data.now - Date.now(); onData(); };
+  es.onmessage = (e) => {
+    data = JSON.parse(e.data); skew = data.now - Date.now();
+    // The page changed on the server (an update): reload, so an iCUE widget never runs stale code.
+    if (data.build && pageBuild && data.build !== pageBuild) return location.reload();
+    pageBuild = pageBuild || data.build;
+    onData();
+  };
 }
 
 function onData() {
@@ -578,9 +609,15 @@ function renderCenter() {
     setHTML(lane, `<div class="empty-lane"><h3>${ui.filter === 'active' ? 'Nothing running right now' : 'No sessions in the last 30 days'}</h3>
       <div>New Claude Code sessions appear here as soon as they start.</div>
       ${ui.filter === 'active' ? '<button class="ghost" data-act="filter" data-key="all">Show the last 30 days</button>' : ''}</div>`);
+  } else if (rowsMode()) {
+    lane.classList.add('rows');
+    lane.style.gridTemplateRows = lane.style.gridTemplateColumns = '';
+    setHTML(lane, list.map(rowHtml).join(''));
+    return updateLaneFade();
   } else {
     setHTML(lane, list.map(cardHtml).join(''));
   }
+  lane.classList.remove('rows');
   // Few sessions: stretch the cards to fill the lane. Many: fixed-width cards that scroll sideways.
   // A short lane (small widget slots) only has room for one row.
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 20;
@@ -615,6 +652,34 @@ function cardHtml(s) {
     ${meta}
     ${said ? `<div class="preview">${esc(said)}</div>` : ''}
     <div class="card-foot">${foot}</div></button>`;
+}
+
+// Between the compact layout and a full-width screen (the Large widget slot), cards get too
+// narrow, so sessions are listed as rows instead.
+const ROWS_MQ = matchMedia('(min-width: 1401px) and (max-width: 2200px)');
+const rowsMode = () => ROWS_MQ.matches;
+
+function rowHtml(s) {
+  const st = status(s);
+  const open = ui.expanded === s.id;
+  const what = st === 'approval' ? (s.pending ? 'Needs your approval' : `Waiting for approval in Claude${s.machine ? ` on ${s.machine}` : ''}`)
+    : st === 'working' ? s.activity || 'Working…'
+    : s.plan && s.plan.done < s.plan.total ? `Plan ${s.plan.done}/${s.plan.total}` : '';
+  const where = [ui.project === null && s.groupKind === 'project' && s.groupName, s.projectName !== s.groupName && s.projectName, s.machine].filter(Boolean).join(' · ');
+  const said = s.lastMessage && st !== 'working' ? s.lastMessage : s.lastPrompt !== s.title ? s.lastPrompt : s.lastMessage;
+  const ctx = s.context == null ? '' : `<span class="meter ${s.context >= 90 ? 'hot' : s.context >= 70 ? 'warn' : ''}"><i><b style="width:${s.context}%"></b></i>${s.context}%</span>`;
+  const more = open ? `<div class="row-more">
+      ${s.model || ctx ? `<div class="card-meta">${s.model ? `<span class="mdl">${esc(s.model)}</span>` : ''}${ctx}${s.cost ? `<span>$${s.cost.toFixed(2)}</span>` : ''}</div>` : ''}
+      ${planHtml(s.plan)}
+      ${said ? `<div class="preview">${esc(said)}</div>` : ''}
+      <div class="row-actions"><span class="ghost" data-act="thread" data-key="${esc(s.id)}">Open thread</span></div>
+    </div>` : '';
+  return `<div class="row-item st-${st} ${open ? 'open' : ''}" data-act="session" data-key="${esc(s.id)}">
+    <div class="row-line">${statusHtml(st)}
+      <div class="row-main"><div class="row-title${s.untitled ? ' untitled' : ''}">${esc(s.title)}</div>
+        <div class="row-sub">${where ? `<span class="where">${esc(where)}</span>` : ''}${what ? `<span class="what">${esc(what)}</span>` : ''}</div></div>
+      <div class="row-end"><span>${ago(s.lastActivity)}</span>${icon('right')}</div></div>
+    ${more}</div>`;
 }
 
 // Plan progress from Claude's to-do list: one segment per step.
@@ -863,9 +928,12 @@ document.addEventListener('click', (e) => {
       const s = data.sessions.find((x) => x.id === key);
       ui.session = key;
       const p = s && data.pending.find((x) => x.sessionId === s.id);
-      if (p) { ui.req = p.id; ui.prevView = 'thread'; ui.view = 'approval'; } else ui.view = 'thread';
+      if (p) { ui.req = p.id; ui.prevView = 'thread'; ui.view = 'approval'; }
+      else if (rowsMode()) { ui.expanded = ui.expanded === key ? null : key; } // rows expand in place
+      else ui.view = 'thread';
       render(); break;
     }
+    case 'thread': ui.session = key; ui.view = 'thread'; render(); break;
     case 'req': ui.req = data.pending[+key]?.id || ui.req; renderPanel(); break;
     case 'decide': decide(key); break;
     case 'close': ui.view = 'overview'; ui.session = null; render(); break;
@@ -882,6 +950,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 const cancelHold = () => { clearTimeout(holdTimer); holdTimer = null; document.querySelectorAll('.pressing').forEach((x) => x.classList.remove('pressing')); };
 ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, cancelHold, true));
+ROWS_MQ.addEventListener('change', () => render());
 $('lane').addEventListener('scroll', updateLaneFade, { passive: true });
 addEventListener('resize', updateLaneFade);
 

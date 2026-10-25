@@ -668,7 +668,8 @@ function snapshot() {
       createdAt: p.createdAt, summary: describeTool(p.tool, p.input), ...riskOf(p.tool, p.input, s.projectCwd || s.cwd),
       sessionTitle: titleOf(s) || `Session in ${projectName(s.projectCwd || s.cwd)}`, projectName: projectName(s.projectCwd || s.cwd), machine: s.machine || null };
   });
-  return { now: Date.now(), sessions: list, pending: pend, usage: usageSnapshot() };
+  let build = null; try { build = fs.statSync(INDEX).mtimeMs; } catch {}
+  return { now: Date.now(), build, sessions: list, pending: pend, usage: usageSnapshot() };
 }
 
 let bcTimer = null;

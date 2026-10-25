@@ -61,6 +61,18 @@ node install-hooks.js
 npm start                    # prints the dashboard URL, including your access token
 ```
 
+### As an iCUE widget
+
+Instead of a browser window on the Edge, the dashboard can run as an iCUE widget next to your other widgets. The widget is a frame around the dashboard this server serves, so it updates with the server and needs no reinstall when the dashboard changes. In the Small and Medium slots, the dashboard switches to a compact layout: one row of session cards, limits in the header, and requests or threads taking over the slot when you tap them.
+
+```powershell
+npm install -g icuewidget-cli      # Corsair's widget CLI, used to validate and package
+node icue-widget/build.js          # builds icue-widget/dist/claude-edge.icuewidget with your token filled in
+.\start-edge.ps1 -Startup -NoBrowser
+```
+
+Import `claude-edge.icuewidget` in iCUE and add it to the Edge in any horizontal size. The widget only asks for access to `localhost:47821`. The built package contains your access token, so don't share it; `node icue-widget/build.js --no-token` builds one without it, and the token can then be pasted into the widget's settings.
+
 ### Sessions on other machines
 
 Claude Code sessions on other computers on your network (Linux boxes, robots, GPU servers) can report to the same dashboard:

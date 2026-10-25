@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>'Claude Edge'</title>
+  <link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
+  <meta name="x-icue-property" content="accessToken" data-label="'Access token'" data-type="textfield" data-default="''" />
+  <script id="x-icue-groups" type="application/json">
+  [
+    { "title": "'Claude Edge'", "properties": ["accessToken"], "info": "'The token from ~/.claude-edge/config.json on this PC. Built with build.js, it is filled in already.'" }
+  ]
+  </script>
+</head>
+<body>
+  <!-- The widget is a frame around the dashboard the Claude Edge server serves on this PC, so it
+       stays live and picks up dashboard updates without reinstalling. The dashboard switches to a
+       compact one-column layout in the smaller slots. -->
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #131312; color: #b8b3a7;
+      font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+    iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; opacity: 0; transition: opacity .4s; }
+    iframe.on { opacity: 1; }
+    .state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2vmin;
+      text-align: center; padding: 6vmin 8vmin; box-sizing: border-box; }
+    .state b { color: #f2efe7; font: 600 6vmin/1.2 Georgia, serif; }
+    .state span { font-size: 3.6vmin; max-width: 60ch; line-height: 1.4; }
+    .state code { font-family: Consolas, monospace; color: #d97757; }
+    .star { width: 9vmin; height: 9vmin; stroke: #d97757; stroke-width: 2.6; stroke-linecap: round; fill: none; animation: spin 2.4s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <div class="state" id="state">
+    <svg class="star" viewBox="0 0 24 24"><line x1="12" y1="2.5" x2="12" y2="21.5"/><line x1="12" y1="2.5" x2="12" y2="21.5" transform="rotate(45 12 12)"/><line x1="12" y1="2.5" x2="12" y2="21.5" transform="rotate(90 12 12)"/><line x1="12" y1="2.5" x2="12" y2="21.5" transform="rotate(135 12 12)"/></svg>
+    <b id="stateTitle">Connecting to Claude Edge</b>
+    <span id="stateText"></span>
+  </div>
+  <iframe id="dash" title="Claude Edge"></iframe>
+  <script>
+    // Bare assignment on purpose: iCUE may run this in a Function() context.
+    icueEvents = { 'onDataUpdated': connect, 'onICUEInitialized': connect };
+
+    var SERVER = 'http://localhost:47821';
+
+    // iCUE may inject properties as globals or as locals of a Function() context.
+    function getIcueProperty(name) {
+      if (Object.prototype.hasOwnProperty.call(window, name)) {
+        var v = window[name];
+        if (v !== undefined && v !== null && v !== '') return v;
+      }
+      try {
+        var w = Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined')();
+        if (w !== undefined && w !== null && w !== '') return w;
+      } catch (e) {}
+      return undefined;
+    }
+
+    function show(title, text) {
+      document.getElementById('stateTitle').textContent = title;
+      document.getElementById('stateText').innerHTML = text || '';
+      document.getElementById('state').style.display = '';
+      document.getElementById('dash').classList.remove('on');
+    }
+
+    var current = '', retry = null;
+    function connect() {
+      clearTimeout(retry);
+      var token = String(getIcueProperty('accessToken') || new URLSearchParams(location.hash.slice(1)).get('t') || '').trim();
+      if (!token) {
+        show('Add your access token', 'Paste the token from <code>~/.claude-edge/config.json</code> into this widget’s settings in iCUE.');
+        return;
+      }
+      // Check the server is up first: a frame pointed at a dead port just stays blank.
+      fetch(SERVER + '/health', { mode: 'no-cors', cache: 'no-store' }).then(function () {
+        var src = SERVER + '/?embed=1#t=' + encodeURIComponent(token);
+        var frame = document.getElementById('dash');
+        if (src !== current) { current = src; frame.src = src; }
+        frame.classList.add('on');
+        document.getElementById('state').style.display = 'none';
+      }).catch(function () {
+        current = '';
+        show('Claude Edge isn’t running', 'Start the dashboard server on this PC (<code>start-edge.ps1 -NoBrowser</code>). Retrying…');
+        retry = setTimeout(connect, 5000);
+      });
+    }
+
+    // Once the dashboard is up it reconnects by itself, but if the server was restarted while the
+    // frame showed an error page, look again every so often.
+    setInterval(function () { if (current) fetch(SERVER + '/health', { mode: 'no-cors', cache: 'no-store' }).catch(function () { connect(); }); }, 30000);
+
+    // A single false read of iCUE_initialized is a race; retry briefly before assuming a plain browser.
+    var bootAttempts = 0;
+    function bootCheck() {
+      if (typeof iCUE_initialized !== 'undefined' && iCUE_initialized) { connect(); return; }
+      if (bootAttempts++ < 15) { setTimeout(bootCheck, 100); return; }
+      connect();
+    }
+    bootCheck();
+  </script>
+</body>
+</html>

@@ -260,6 +260,34 @@
   .tool .ico { color: var(--accent); opacity: .8; font-size: .72rem; }
   .th-empty { margin: auto; color: var(--text-3); font: italic 1rem var(--serif); }
 
+  /* ---------- compact: small iCUE widget slots and narrow windows ----------
+     One column: the session lane, or (after a tap or a new request) the panel in its place. */
+  .compact-only { display: none !important; }
+  .mini-usage { display: none; }
+  @media (max-width: 1400px) {
+    html { font-size: clamp(11px, min(100vh / 22, 100vw / 44), 22px); }
+    .app { grid-template-columns: minmax(0, 1fr); padding: .7rem; gap: 0; }
+    .rail { display: none; }
+    .app.show-panel .center { display: none; }
+    .app:not(.show-panel) .panel { display: none; }
+    .compact-only { display: grid !important; }
+    .center-head { padding-bottom: .6rem; align-items: center; }
+    .center-head h1 { font-size: 1.2rem; }
+    .mini-usage { display: flex; align-items: center; gap: .8rem; margin-left: auto; padding: .35rem .8rem; border-radius: 2rem; background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair);
+      font: 600 .66rem/1 var(--sans); color: var(--text-2); white-space: nowrap; min-height: 2rem; }
+    .mini-usage .meter i { width: 2.2rem; }
+    .center-head .seg { margin-left: .6rem; }
+    .ov .clock { font-size: 2.6rem; }
+    .ov .stats { display: none; }
+  }
+  @media (max-width: 1400px) and (max-height: 420px) {
+    .center-head .sub, .center-head .seg { display: none; }
+    .ap { padding: .8rem 1rem .7rem; gap: .5rem; }
+    .ap-title { font-size: 1.15rem; }
+    .btn { height: 2.6rem; }
+    .ov .clock, .ov .date { display: none; }
+  }
+
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 50% { opacity: .35; } }
   @keyframes rise { from { opacity: 0; transform: translateY(.4rem); } }
@@ -269,7 +297,7 @@
 </style>
 </head>
 <body>
-<div class="app">
+<div class="app" id="app">
   <aside class="rail">
     <div class="brand"><span id="logo"></span><span class="brand-name">Claude</span><span class="brand-sub">Edge</span></div>
     <div class="summary" id="summary"></div>
@@ -362,6 +390,7 @@ function onData() {
 }
 
 function render() {
+  $('app').classList.toggle('show-panel', ui.view !== 'overview');
   renderRail(); renderCenter(); renderPanel();
   const c = counts(data.sessions);
   fx.mood(c.approval ? 'approval' : c.working ? 'working' : c.idle ? 'idle' : 'quiet', c.working);
@@ -541,6 +570,7 @@ function renderCenter() {
   const sub = [`${list.length} ${ui.filter === 'active' ? 'active ' : ''}${noun}${list.length === 1 ? '' : 's'}`,
     c.working && `${c.working} working`, c.approval && `${c.approval} waiting on you`].filter(Boolean).join(' · ');
   setHTML('centerHead', `<div style="min-width:0"><h1>${esc(projName)}</h1><div class="sub">${esc(sub)}</div></div>
+    ${miniUsageHtml()}
     <div class="seg">${['active', 'all'].map((f) => `<button class="${ui.filter === f ? 'sel' : ''}" data-act="filter" data-key="${f}">${f === 'active' ? 'Active' : 'Last 30 days'}</button>`).join('')}</div>`);
 
   const lane = $('lane');
@@ -552,9 +582,13 @@ function renderCenter() {
     setHTML(lane, list.map(cardHtml).join(''));
   }
   // Few sessions: stretch the cards to fill the lane. Many: fixed-width cards that scroll sideways.
-  const rows = list.length <= 2 ? 1 : 2, cols = Math.max(2, Math.ceil(list.length / rows));
+  // A short lane (small widget slots) only has room for one row.
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 20;
+  const short = lane.getBoundingClientRect().height / rem < 20;
+  const rows = list.length <= 2 || short ? 1 : 2, cols = Math.max(short ? 1 : 2, Math.ceil(list.length / rows));
   lane.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
-  lane.style.gridTemplateColumns = cols <= 4 ? `repeat(${cols}, minmax(0, 1fr))` : '';
+  const fit = Math.max(1, Math.floor(lane.getBoundingClientRect().width / rem / 14.5));
+  lane.style.gridTemplateColumns = cols <= Math.min(4, fit) ? `repeat(${cols}, minmax(0, 1fr))` : '';
   updateLaneFade();
 }
 
@@ -599,7 +633,8 @@ function updateLaneFade() {
 // ---------- panel ----------
 function renderPanel() {
   const panel = $('panel');
-  panel.className = `panel mode-${ui.view}`;
+  panel.className = `panel mode-${ui.view === 'usage' ? 'overview' : ui.view}`;
+  $('app').classList.toggle('show-panel', ui.view !== 'overview');
   if (ui.view === 'approval') return setHTML('panelBody', approvalHtml());
   if (ui.view === 'thread') return renderThread();
   setHTML('panelBody', overviewHtml());
@@ -659,10 +694,23 @@ function usageHtml(u) {
   </div>`;
 }
 
+// Compact layouts have no usage panel beside the lane: show the limits in the header, tap for more.
+function miniUsageHtml() {
+  const q = data.usage && data.usage.quota;
+  const m = (label, w) => {
+    if (!w || w.used_percentage == null) return '';
+    const p = Math.round(w.used_percentage);
+    return `<span class="meter ${p >= 90 ? 'hot' : p >= 70 ? 'warn' : ''}">${label} <i><b style="width:${Math.min(100, p)}%"></b></i>${p}%</span>`;
+  };
+  const inner = q && now() - q.at < 6 * 3600e3 ? m('5h', q.five_hour) + m('Week', q.seven_day) : '';
+  return `<button class="mini-usage" data-act="usage">${inner || 'Usage'}</button>`;
+}
+
 function overviewHtml() {
   const c = counts(data.sessions);
   const k = clockParts();
   return `<div class="pv ov">
+    <button class="icon-btn compact-only" data-act="close" style="position:absolute;top:1rem;right:1rem;z-index:2">${icon('x')}</button>
     <div><div class="clock"><span id="clockT">${k.time}</span><small id="clockA">${k.ampm}</small></div><div class="date" id="clockD">${k.date}</div></div>
     ${usageHtml(data.usage)}
     <div class="stats">
@@ -731,6 +779,7 @@ function approvalHtml() {
       ${list.length > 1 ? `<div class="pager"><button data-act="req" data-key="${idx - 1}" ${idx === 0 ? 'disabled' : ''}>${icon('left')}</button>
         <span>${idx + 1} of ${list.length}</span>
         <button data-act="req" data-key="${idx + 1}" ${idx === list.length - 1 ? 'disabled' : ''}>${icon('right')}</button></div>` : ''}
+      <button class="icon-btn compact-only" data-act="close" style="${list.length > 1 ? '' : 'margin-left:auto'}">${icon('x')}</button>
     </div>
     <h2 class="ap-title">${esc(requestTitle(p))}</h2>
     ${desc ? `<div class="ap-desc">${esc(desc)}</div>` : ''}
@@ -820,6 +869,7 @@ document.addEventListener('click', (e) => {
     case 'req': ui.req = data.pending[+key]?.id || ui.req; renderPanel(); break;
     case 'decide': decide(key); break;
     case 'close': ui.view = 'overview'; ui.session = null; render(); break;
+    case 'usage': ui.view = 'usage'; render(); break;
     case 'review': ui.prevView = 'thread'; ui.view = 'approval'; renderPanel(); break;
   }
 });

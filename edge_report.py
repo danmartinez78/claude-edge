@@ -6,8 +6,12 @@ settings.json, with edge.json holding the dashboard URL and this machine's token
                           read from its transcript (the dashboard can't read it from here)
   edge_report.py status   status line: forward Claude Code's status data (usage limits, model,
                           context), then print the status line you had before, or a short one
+  edge_report.py usage    if installed with --usage: at most every 30 minutes, ask Anthropic for
+                          the plan's limits using this machine's Claude login, and send the
+                          percentages to the dashboard. The token itself is never sent there.
+                          Status lines only run in terminal sessions, so this keeps limits current.
 """
-import json, os, subprocess, sys, urllib.request
+import datetime, json, os, subprocess, sys, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 try:
@@ -71,13 +75,74 @@ def meta_lines(path):
     return list(latest.values()) + [x for x in (todos, card, usage) if x]
 
 
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_EVERY = 29 * 60  # cron fires every 30 minutes; stay just under so a run isn't skipped
+
+
+def epoch(v):
+    if isinstance(v, (int, float)):
+        return v
+    return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+
+
+def poll_usage(force=False):
+    """Returns a one-line result for the installer to print. Never prints or sends the token."""
+    if not CONF.get("usage"):
+        return "usage checks are off"
+    stamp = os.path.join(HERE, "usage.stamp")
+    try:
+        if not force and time.time() - os.path.getmtime(stamp) < USAGE_EVERY:
+            return "checked recently"
+    except OSError:
+        pass
+    # Count failures too, so a problem can't turn into a request on every hook.
+    with open(stamp, "w"):
+        pass
+    try:
+        with open(os.path.join(os.path.dirname(HERE), ".credentials.json")) as f:
+            login = json.load(f).get("claudeAiOauth") or {}
+    except Exception:
+        login = {}
+    token = login.get("accessToken")
+    if not token:
+        return "no Claude login found on this machine"
+    # Refreshing could sign Claude Code out, so an expired token waits for Claude Code to renew it.
+    if login.get("expiresAt") and login["expiresAt"] < time.time() * 1000:
+        return "the Claude login has expired; it renews the next time Claude Code runs"
+    req = urllib.request.Request(USAGE_URL, headers={"Authorization": "Bearer " + token,
+                                                     "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-edge"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        return "the usage service answered HTTP %d" % e.code
+    except Exception as e:
+        return "couldn't reach the usage service (%s)" % type(e).__name__
+    limits = {}
+    for name in ("five_hour", "seven_day"):
+        w = data.get(name) or {}
+        try:
+            if w.get("utilization") is not None and w.get("resets_at"):
+                limits[name] = {"used_percentage": float(w["utilization"]), "resets_at": epoch(w["resets_at"])}
+        except Exception:
+            pass
+    if not limits:
+        return "the usage service sent no limits (fields: %s)" % ", ".join(sorted(data))
+    post("/api/status", {"rate_limits": limits}, 1)
+    return "sent " + ", ".join("%s %d%%" % (k, v["used_percentage"]) for k, v in limits.items())
+
+
 def hook():
     try:
         ev = json.load(sys.stdin)
     except Exception:
         return
     if ev.get("session_id") and ev.get("transcript_path"):
-        post("/api/meta", {"session_id": ev["session_id"], "lines": meta_lines(ev["transcript_path"])}, 2)
+        post("/api/meta", {"session_id": ev["session_id"], "lines": meta_lines(ev["transcript_path"])}, 1)
+    try:
+        poll_usage()
+    except Exception:
+        pass
 
 
 def status():
@@ -103,4 +168,5 @@ def status():
 
 
 if __name__ == "__main__":
-    {"hook": hook, "status": status}.get(sys.argv[1] if len(sys.argv) > 1 else "", lambda: None)()
+    {"hook": hook, "status": status,
+     "usage": lambda: print(poll_usage("--force" in sys.argv))}.get(sys.argv[1] if len(sys.argv) > 1 else "", lambda: None)()

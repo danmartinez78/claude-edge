@@ -2,7 +2,7 @@
 'use strict';
 // Connects Claude Code on another machine (over SSH) to this dashboard.
 //
-//   node add-machine.js <name> <ssh-target> [--address <this-PC-ip>]
+//   node add-machine.js <name> <ssh-target> [--address <this-PC-ip>] [--usage]
 //   node add-machine.js <name> <ssh-target> --uninstall
 //   node add-machine.js <name> --print          (print a command to run on the machine instead)
 //
@@ -19,6 +19,8 @@ const { loadConfig, saveConfig, HOOK_EVENTS } = require('./config');
 const argv = process.argv.slice(2);
 const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv.splice(i, 2)[1] : null; };
 const uninstall = argv.includes('--uninstall') && argv.splice(argv.indexOf('--uninstall'), 1);
+// --usage: this machine checks the plan's limits every 30 minutes using its own Claude login. One machine is enough.
+const usage = argv.includes('--usage') && argv.splice(argv.indexOf('--usage'), 1);
 const address = flag('--address');
 const [name, target] = argv;
 if (!name || !target || !/^[\w.-]{1,40}$/.test(name)) {
@@ -55,7 +57,8 @@ const reporter = fs.readFileSync(path.join(__dirname, 'edge_report.py'), 'utf8')
 // Runs on the remote machine: back up settings.json, drop any earlier dashboard hooks,
 // add ours and the reporter, then check the dashboard is reachable from there.
 const py = `
-import json, os, shutil, time, urllib.request
+import json, os, shutil, subprocess, time, urllib.request
+usage = ${usage ? 'True' : 'False'}
 port = ${JSON.stringify(String(cfg.port))}
 hooks = json.loads(${JSON.stringify(JSON.stringify(hooks))})
 edge = json.loads(${JSON.stringify(JSON.stringify({ url: `http://${host}:${cfg.port}`, token: cfg.machines[name] || '' }))})
@@ -85,6 +88,20 @@ except Exception:
     pass
 sl = settings.get("statusLine") or {}
 our_sl = "edge_report.py" in str(sl.get("command", ""))
+usage = usage or (bool(prev.get("usage")) and not uninstall)
+# Limits are checked from cron so they stay current while no session is running here.
+def set_cron(on):
+    try:
+        cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        lines = [l for l in cur.splitlines() if "edge_report.py" not in l]
+        if on:
+            lines.append("*/30 * * * * python3 '%s' usage >/dev/null 2>&1" % script)
+        if lines or cur:
+            subprocess.run(["crontab", "-"], input="\\n".join(lines) + "\\n", text=True, check=True)
+        return True
+    except Exception:
+        return False
+cron_ok = set_cron(usage)
 if uninstall:
     if our_sl:
         if prev.get("prev_status"):
@@ -97,6 +114,7 @@ else:
     with open(script, "w") as f:
         f.write(reporter)
     edge["prev_status"] = prev.get("prev_status") if our_sl else sl.get("command")
+    edge["usage"] = usage
     with open(os.path.join(rdir, "edge.json"), "w") as f:
         json.dump(edge, f)
     os.chmod(os.path.join(rdir, "edge.json"), 0o600)
@@ -120,6 +138,11 @@ if not uninstall:
         print("Dashboard reachable from this machine: " + health)
     except Exception as e:
         print("WARNING: can't reach the dashboard at %s (%s). Check the Windows firewall and that the server was restarted." % (health, e))
+    if usage:
+        if not cron_ok:
+            print("WARNING: couldn't set up cron, so limits are only checked when a session here stops.")
+        r = subprocess.run(["python3", script, "usage", "--force"], capture_output=True, text=True)
+        print("Usage check: " + (r.stdout.strip() or r.stderr.strip()))
 `;
 
 // --print: output a shell command to run on the machine yourself (or hand to a Claude session there).

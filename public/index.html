@@ -733,7 +733,7 @@ function quotaRow(name, w, hours, at) {
     return `<div class="q stale"><span class="q-name">${name}</span><div class="q-bar"></div><span class="q-pct">–</span>
       <span class="q-sub">Reset ${esc(new Date(w.resets_at * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric' }))} · no reading since</span></div>`;
   }
-  const stale = now() - at > 30 * 60e3;
+  const stale = now() - at > 65 * 60e3; // readings normally arrive every 30 minutes
   const cls = `${pct >= 90 ? 'hot' : pct >= 70 ? 'warn' : ''} ${stale ? 'stale' : ''}`;
   let sub = `Resets ${until(w.resets_at)}`, over = false;
   // Pace from an old reading would be guesswork.
@@ -776,7 +776,7 @@ function miniUsageHtml() {
     const p = Math.round(w.used_percentage);
     return `<span class="meter ${p >= 90 ? 'hot' : p >= 70 ? 'warn' : ''}">${label} <i><b style="width:${Math.min(100, p)}%"></b></i>${p}%</span>`;
   };
-  const current = (w) => (w && w.resets_at * 1000 > now() && now() - q.at < 30 * 60e3 ? w : null);
+  const current = (w) => (w && w.resets_at * 1000 > now() && now() - q.at < 65 * 60e3 ? w : null);
   const inner = q ? m('5h', current(q.five_hour)) + m('Week', current(q.seven_day)) : '';
   return `<button class="mini-usage" data-act="usage">${inner || 'Usage'}</button>`;
 }

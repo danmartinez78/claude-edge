@@ -87,6 +87,8 @@ This picks this PC's LAN address and adds it to the server's listen list, create
 New-NetFirewallRule -DisplayName "Claude Edge dashboard" -Direction Inbound -Protocol TCP -LocalPort 47821 -RemoteAddress LocalSubnet -Profile Private -Action Allow
 ```
 
+Status lines only run in terminal sessions, so limits can go days without an update if you mostly use the desktop app or Projects. Add `--usage` for one machine that's signed in to the Claude Code CLI, and it checks your limits every 30 minutes using its own login and sends the dashboard just the percentages; the token never leaves that machine. This uses an unofficial Anthropic endpoint that may change, so it's opt-in. It's installed with cron and removed by `--uninstall`.
+
 Cards from other machines are labelled with the machine's name. Their thread view is built from hook events (your prompts, tool steps and Claude's replies), because their transcripts stay on that machine. `node add-machine.js thor dev@192.168.1.50 --uninstall` removes them again.
 
 Each machine's token can only send events. It can't read the dashboard or approve anything, so a token sniffed from the plain-HTTP LAN traffic can't be used to approve or deny requests.

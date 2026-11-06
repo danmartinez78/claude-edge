@@ -153,6 +153,8 @@
   .q.hot .q-bar b { background: var(--red); } .q.hot .q-pct { color: var(--red); }
   .q-sub { grid-column: 2 / span 2; color: var(--text-3); font-size: .6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .q-sub.over { color: var(--amber); }
+  .q.stale .q-bar b { background: var(--text-3); opacity: .55; }
+  .q.stale .q-pct { color: var(--text-3); }
   .q-none { color: var(--text-3); font-size: .66rem; line-height: 1.4; }
   .chart { display: flex; align-items: flex-end; gap: .14rem; height: 2.6rem; }
   .chart i { flex: 1; min-height: 2px; border-radius: .15rem .15rem 0 0; background: rgba(255, 244, 228, .16); }
@@ -721,14 +723,22 @@ function until(sec) {
 }
 
 // One limit window: usage bar, a tick where an even pace would be by now, and where this pace lands.
-function quotaRow(name, w, hours) {
+function quotaRow(name, w, hours, at) {
   if (!w || w.used_percentage == null) return '';
   const pct = Math.round(w.used_percentage);
   const start = w.resets_at * 1000 - hours * 3600e3;
   const elapsed = Math.min(1, Math.max(0.001, (now() - start) / (hours * 3600e3)));
-  const cls = pct >= 90 ? 'hot' : pct >= 70 ? 'warn' : '';
+  // The window has reset since this reading, so the number says nothing about now.
+  if (w.resets_at * 1000 <= now()) {
+    return `<div class="q stale"><span class="q-name">${name}</span><div class="q-bar"></div><span class="q-pct">–</span>
+      <span class="q-sub">Reset ${esc(new Date(w.resets_at * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric' }))} · no reading since</span></div>`;
+  }
+  const stale = now() - at > 30 * 60e3;
+  const cls = `${pct >= 90 ? 'hot' : pct >= 70 ? 'warn' : ''} ${stale ? 'stale' : ''}`;
   let sub = `Resets ${until(w.resets_at)}`, over = false;
-  if (elapsed > 0.05 && pct > 0) {
+  // Pace from an old reading would be guesswork.
+  if (stale) sub = `${pct}% as of ${ago(at)} ago · resets ${until(w.resets_at)}`;
+  else if (elapsed > 0.05 && pct > 0) {
     const projected = pct / elapsed;
     if (projected >= 100) {
       const hitAt = start + (100 / pct) * (now() - start);
@@ -744,13 +754,12 @@ function quotaRow(name, w, hours) {
 function usageHtml(u) {
   if (!u) return '';
   const q = u.quota;
-  const fresh = q && now() - q.at < 6 * 3600e3;
-  const rows = fresh ? quotaRow('5 hours', q.five_hour, 5) + quotaRow('Week', q.seven_day, 168) : '';
+  const rows = q ? quotaRow('5 hours', q.five_hour, 5, q.at) + quotaRow('Week', q.seven_day, 168, q.at) : '';
   const limits = rows || `<div class="q-none">Your plan's limits show up here once a Claude Code session in a terminal updates its status line.</div>`;
   const max = Math.max(1, ...u.days.map((d) => d.tokens));
   const chart = u.days.map((d, i) => `<i class="${i === u.days.length - 1 ? 'today' : ''}" style="height:${Math.max(2, (d.tokens / max) * 100).toFixed(1)}%"></i>`).join('');
   return `<div class="usage">
-    <div class="sec-h">Plan usage${fresh ? `<span>updated ${ago(q.at)}${q.machine ? ` · ${esc(q.machine)}` : ''}</span>` : ''}</div>
+    <div class="sec-h">Plan usage${rows ? `<span>updated ${ago(q.at)}${q.machine ? ` · ${esc(q.machine)}` : ''}</span>` : ''}</div>
     ${limits}
     <div class="sec-h" style="margin-top:.35rem">Last 30 days<span>${u.ready ? 'this PC' : 'reading transcripts…'}</span></div>
     <div class="chart">${chart}</div>
@@ -767,7 +776,8 @@ function miniUsageHtml() {
     const p = Math.round(w.used_percentage);
     return `<span class="meter ${p >= 90 ? 'hot' : p >= 70 ? 'warn' : ''}">${label} <i><b style="width:${Math.min(100, p)}%"></b></i>${p}%</span>`;
   };
-  const inner = q && now() - q.at < 6 * 3600e3 ? m('5h', q.five_hour) + m('Week', q.seven_day) : '';
+  const current = (w) => (w && w.resets_at * 1000 > now() && now() - q.at < 30 * 60e3 ? w : null);
+  const inner = q ? m('5h', current(q.five_hour)) + m('Week', current(q.seven_day)) : '';
   return `<button class="mini-usage" data-act="usage">${inner || 'Usage'}</button>`;
 }
 

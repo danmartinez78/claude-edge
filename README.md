@@ -101,7 +101,7 @@ Those messages don't carry the Project's name, so an unlabelled Project is named
 Whenever you write a note for a thread, start it with [project: GO2 Embodied AI] [thread: <the thread's title>].
 ```
 
-Use your Project's name. Threads are titled with the title Claude Code gives the session; the `[thread:]` label is a fallback. The labels are removed from what the dashboard displays.
+Use your Project's name. Threads on other machines have no stored title, so they're titled from the status card they publish, which also gives their plan progress. Until a thread publishes one, it shows the note that created it, if the dashboard saw it, or a generic name. A `[thread:]` label overrides the card. The labels are removed from what the dashboard displays.
 
 ### Try it without Claude Code
 

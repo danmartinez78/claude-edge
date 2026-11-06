@@ -44,7 +44,7 @@ def meta_lines(path):
         return []
     if size > TAIL:
         lines = lines[1:]
-    latest, usage, todos = {}, None, None
+    latest, usage, todos, card = {}, None, None, None
     for line in lines:
         if any(k in line for k in META):
             try:
@@ -52,7 +52,7 @@ def meta_lines(path):
                 latest[o["type"]] = o
             except Exception:
                 pass
-        elif '"type":"assistant"' in line and ('"usage"' in line or "TodoWrite" in line):
+        elif '"type":"assistant"' in line and ('"usage"' in line or "TodoWrite" in line or "update_status" in line):
             try:
                 o = json.loads(line)
             except Exception:
@@ -66,7 +66,9 @@ def meta_lines(path):
             for p in m.get("content") or []:
                 if isinstance(p, dict) and p.get("type") == "tool_use" and p.get("name") == "TodoWrite":
                     todos = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "TodoWrite", "input": p.get("input")}]}}
-    return list(latest.values()) + [x for x in (todos, usage) if x]
+                if isinstance(p, dict) and p.get("type") == "tool_use" and str(p.get("name", "")).endswith("__update_status"):
+                    card = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": p.get("name"), "input": p.get("input")}]}}
+    return list(latest.values()) + [x for x in (todos, card, usage) if x]
 
 
 def hook():

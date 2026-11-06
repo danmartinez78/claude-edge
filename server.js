@@ -94,7 +94,7 @@ const LABEL_RE = /\[project:\s*([^\]\n]{1,60})\]\s*/i;
 const THREAD_RE = /\[thread:\s*([^\]\n]{1,90})\]\s*/i;
 const stripMd = (t) => t.replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
 function unwrapEnvelope(raw) {
-  if (typeof raw !== 'string' || !/^\s*<project_claude_message\b/.test(raw)) return null;
+  if (typeof raw !== 'string' || !/^\s*<(project_claude_message|relay)\b/.test(raw)) return null;
   const label = (LABEL_RE.exec(raw) || [])[1];
   const thread = [...raw.matchAll(new RegExp(THREAD_RE.source, 'gi'))].map((m) => m[1].trim()).pop(); // latest wins
   const text = raw.replace(new RegExp(LABEL_RE.source, 'gi'), '').replace(new RegExp(THREAD_RE.source, 'gi'), '');
@@ -110,8 +110,24 @@ function unwrapEnvelope(raw) {
   const parts = [];
   if (said) parts.push(`You: ${said}`);
   if (task) parts.push(`Task from the project: ${task}`);
-  return { title: clip(first, 90) || null, text: parts.join('\n\n') || 'Message from the project coordinator',
+  // Only the note that creates a thread describes the thread; later notes are one-off messages.
+  const spawned = /^\s*<relay\b[^>]*\breason="spawn"/.test(raw);
+  return { title: spawned ? clip(first, 90) || null : null, text: parts.join('\n\n') || 'Message from the project coordinator',
     coordinator: coordinator || null, label: label ? label.trim() : null, thread: thread || null };
+}
+
+// Project threads publish a status card: a title line, then a checklist (✓ done, ✱ now, ○ to do).
+// It's the only place their name reaches this machine, and it doubles as plan progress.
+const STATUS_CARD_TOOL = /^mcp__.*hearthbot.*__update_status$/;
+function applyStatusCard(s, text) {
+  if (typeof text !== 'string' || !text.trim()) return;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const isItem = (l) => /^[✓✔✱○●◦•]\s/.test(l);
+  if (!isItem(lines[0])) s.cardTitle = clip(stripMd(lines[0]), 120);
+  const items = lines.filter(isItem);
+  if (!items.length) return;
+  const cur = items.find((l) => /^[✱●]\s/.test(l));
+  s.todos = { done: items.filter((l) => /^[✓✔]\s/.test(l)).length, total: items.length, current: cur ? clip(stripMd(cur.slice(1)), 120) : null };
 }
 
 const decodeXml = (t) => String(t || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
@@ -180,6 +196,7 @@ function noteProject(s, p) {
   }
   if (p.label) { s.projectLabel = p.label; if (s.projectId) projectLabels[canonProject(s.projectId)] = p.label; }
   if (p.thread) s.threadTitle = p.thread;
+  if (p.title) s.spawnTitle = p.title;
 }
 
 // Session details found in transcript lines: the title Claude Code gave it, model, context, cost, plan.
@@ -205,6 +222,7 @@ function applyMeta(s, o) {
       }
       for (const part of Array.isArray(m.content) ? m.content : []) {
         if (part && part.type === 'tool_use' && part.name === 'TodoWrite') s.todos = todoSummary((part.input || {}).todos) || s.todos;
+        if (part && part.type === 'tool_use' && STATUS_CARD_TOOL.test(part.name || '')) applyStatusCard(s, (part.input || {}).text);
       }
       break;
     }
@@ -216,7 +234,8 @@ let quota = null;
 function onStatus(d, machine) {
   if (!d || typeof d !== 'object') return;
   if (d.rate_limits && (d.rate_limits.five_hour || d.rate_limits.seven_day || d.rate_limits.spend_limit)) {
-    quota = { ...d.rate_limits, at: Date.now(), machine: machine || null };
+    // Claude Code drops a window once it resets, so keep the last reading of the others.
+    quota = { ...(quota || {}), ...d.rate_limits, at: Date.now(), machine: machine || null };
   }
   if (!d.session_id) return;
   const s = getSession(d.session_id);
@@ -263,6 +282,7 @@ function onHook(ev, req, res, machine) {
   if (kind && kind.kind === 'project') noteProject(s, kind);
   const quiet = QUIET_TOOL.test(ev.tool_name || '');
   if (ev.hook_event_name === 'PreToolUse' && ev.tool_name === 'TodoWrite') s.todos = todoSummary((ev.tool_input || {}).todos) || s.todos;
+  if (ev.hook_event_name === 'PreToolUse' && STATUS_CARD_TOOL.test(ev.tool_name || '')) applyStatusCard(s, (ev.tool_input || {}).text);
   switch (ev.hook_event_name) {
     case 'UserPromptSubmit':
       if (kind.text) logItem(s, { role: kind.kind === 'system' ? 'system' : 'user', text: clip(kind.kind === 'command' ? `You ran ${kind.text}` : kind.text, 2000) });
@@ -401,11 +421,12 @@ function rawText(o) {
 }
 
 // Best available title: the desktop app's, Claude Code's own (status line, then transcript),
-// a [thread:] label, the transcript summary, or the first thing you typed. A project thread's
-// relayed task is not a title: it's usually a reminder or a handoff note.
+// a [thread:] label, a project thread's status card, the transcript summary, the first thing you
+// typed, or the note that created the thread. Other relayed notes are not titles: they're
+// usually reminders or handoffs.
 function titleOf(s) {
   const first = s.firstPrompt && !s.firstPrompt.startsWith('<') && !s.projectThread ? s.firstPrompt : null;
-  return s.title || s.sessionName || s.customTitle || s.aiTitle || s.threadTitle || s.agentName || s.summary || first || null;
+  return s.title || s.sessionName || s.customTitle || s.aiTitle || s.threadTitle || s.cardTitle || s.agentName || s.summary || first || s.spawnTitle || null;
 }
 
 function scanTranscripts() {
@@ -451,7 +472,7 @@ function readTailMeta(s, file, size) {
   if (len < size) lines.shift();
   for (const line of lines) {
     if (!/"type":"(custom-title|ai-title|agent-name|summary|cost-state|assistant)"/.test(line)) continue;
-    if (line.includes('"type":"assistant"') && !line.includes('"usage"') && !line.includes('TodoWrite')) continue;
+    if (line.includes('"type":"assistant"') && !line.includes('"usage"') && !line.includes('TodoWrite') && !line.includes('update_status')) continue;
     try { applyMeta(s, JSON.parse(line)); } catch {}
   }
 }
